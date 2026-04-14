@@ -268,14 +268,13 @@ def get_test(url):
 
         if download_card:
             download_links = download_card.select(".item-link")
-            for link in download_links:
+            for i, link in enumerate(download_links):
                 href = link.get("href")
-                text_content = link.get_text(strip=True).lower()
-
                 if href:
-                    if "prova" in text_content:
+                    # Primeiro link é sempre a prova, segundo é o gabarito
+                    if i == 0:
                         test["prova"] = href
-                    elif "gab" in text_content or "gabarito" in text_content:
+                    elif i == 1:
                         test["gabarito"] = href
 
     except Exception as e:

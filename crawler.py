@@ -109,8 +109,10 @@ def get_roles(main_url):
 
     tests = []
     # Hardcoded por enquanto, mas pode ser iterado se necessário
-    role_tests = get_exams("https://www.pciconcursos.com.br/provas/analista-de-suporte")
-    tests.extend(role_tests)
+    for link in soup.select("#provas .link-i a"):
+        href = link.get("href")
+        role_tests = get_exams(href)
+        tests.extend(role_tests)
 
     return tests
 

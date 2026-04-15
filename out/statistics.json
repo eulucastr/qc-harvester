@@ -1,0 +1,20 @@
+{
+  "timestamp": "2026-04-15T12:43:34.174744",
+  "tempo_execucao": {
+    "segundos": 1296.9,
+    "minutos": 21.62,
+    "horas": 0.36
+  },
+  "estatisticas_coleta": {
+    "bancas_processadas": 1,
+    "paginas_processadas": 88,
+    "urls_coletadas": 4339,
+    "provas_sucesso": 4338,
+    "provas_erro": 1,
+    "taxa_sucesso": 99.98
+  },
+  "performance": {
+    "provas_por_segundo": 3.34,
+    "urls_por_segundo": 3.35
+  }
+}

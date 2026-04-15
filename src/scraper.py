@@ -10,7 +10,6 @@ Contém:
 """
 
 import logging
-import logging.handlers
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -32,43 +31,7 @@ from performance import (
 # CONFIGURAÇÃO DE LOGGING
 # ============================================================================
 
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
-
 logger = logging.getLogger("pci_harvester")
-logger.setLevel(logging.DEBUG)
-
-log_format = logging.Formatter(
-    "[%(asctime)s] [%(levelname)-8s] [%(threadName)-15s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-
-# Handler para arquivo INFO
-info_handler = logging.handlers.RotatingFileHandler(
-    LOG_DIR / "pci_harvester.log",
-    maxBytes=50 * 1024 * 1024,
-    backupCount=10,
-)
-info_handler.setLevel(logging.INFO)
-info_handler.setFormatter(log_format)
-
-# Handler para arquivo ERROR
-error_handler = logging.handlers.RotatingFileHandler(
-    LOG_DIR / "pci_harvester_errors.log",
-    maxBytes=50 * 1024 * 1024,
-    backupCount=10,
-)
-error_handler.setLevel(logging.ERROR)
-error_handler.setFormatter(log_format)
-
-# Handler para console
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(log_format)
-
-logger.addHandler(info_handler)
-logger.addHandler(error_handler)
-logger.addHandler(console_handler)
 
 # ============================================================================
 # ESTATÍSTICAS GLOBAIS

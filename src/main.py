@@ -7,6 +7,7 @@ Este arquivo coordena:
 - Definição de bancas a processar
 - Execução do scraping
 - Exportação de resultados
+- Logging de bancas processadas
 - Exibição de relatórios
 """
 
@@ -19,9 +20,30 @@ from pathlib import Path
 # Adicionar src ao path para importar módulos
 sys.path.insert(0, str(Path(__file__).parent))
 
-from exporters import export_tests_to_csv, save_error_report, save_statistics_report
+from exporters import (
+    export_tests_to_csv,
+    log_bancas_processadas,
+    save_error_report,
+    save_statistics_report,
+)
 from performance import MAX_RETRIES, THREAD_POOL_SIZE, TIMEOUT
 from scraper import get_roles, stats
+
+# ============================================================================
+# CONFIGURAÇÃO DE BANCAS
+# ============================================================================
+
+# Lista de bancas a processar
+BANCAS_LISTA = [
+    "fgv",
+]
+
+# ============================================================================
+# CONFIGURAÇÃO DE EXPORTAÇÃO
+# ============================================================================
+
+CSV_OUTPUT = "provas.csv"
+OUT_DIR = Path("out")
 
 # ============================================================================
 # CONFIGURAÇÃO DE LOGGING
@@ -65,21 +87,6 @@ logger.addHandler(info_handler)
 logger.addHandler(error_handler)
 logger.addHandler(console_handler)
 
-# ============================================================================
-# CONFIGURAÇÃO DE BANCAS
-# ============================================================================
-
-# Lista de bancas a processar
-BANCAS_LISTA = [
-    "fgv",
-]
-
-# ============================================================================
-# CONFIGURAÇÃO DE EXPORTAÇÃO
-# ============================================================================
-
-CSV_OUTPUT = "provas.csv"
-JSON_OUTPUT = "provas.json"
 
 # ============================================================================
 # FUNÇÃO MAIN
@@ -95,8 +102,9 @@ def main():
     2. Validação de configurações
     3. Execução do scraping
     4. Exportação de dados
-    5. Geração de relatórios
-    6. Exibição de estatísticas
+    5. Logging de bancas processadas
+    6. Geração de relatórios
+    7. Exibição de estatísticas
     """
     try:
         logger.info("=" * 100)
@@ -147,11 +155,27 @@ def main():
 
         logger.info("\nExportando dados...")
 
-        # Exportar CSV
+        # Garantir que o diretório /out existe
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Exportar CSV com append (não sobrescreve dados anteriores)
         success_csv = export_tests_to_csv(tests, CSV_OUTPUT)
 
-        # Exportar JSON (opcional)
-        # success_json = export_tests_to_json(tests, JSON_OUTPUT)
+        if not success_csv:
+            logger.error("Erro ao exportar CSV. Abortando.")
+            return 1
+
+        # ====================================================================
+        # LOGGING DE BANCAS PROCESSADAS
+        # ====================================================================
+
+        logger.info("\nRegistrando bancas processadas...")
+
+        # Registrar todas as bancas com estatísticas completas
+        success_log = log_bancas_processadas(BANCAS_LISTA, stats, elapsed_time)
+
+        if not success_log:
+            logger.warning("Aviso ao registrar bancas no log")
 
         # ====================================================================
         # GERAÇÃO DE RELATÓRIOS
@@ -160,10 +184,10 @@ def main():
         logger.info("\nGerando relatórios...")
 
         # Salvar relatório de erros
-        save_error_report(stats, "logs/error_report.json")
+        save_error_report(stats, "error_report.json")
 
         # Salvar relatório de estatísticas
-        save_statistics_report(stats, elapsed_time, "logs/statistics.json")
+        save_statistics_report(stats, elapsed_time, "statistics.json")
 
         # ====================================================================
         # EXIBIÇÃO DE ESTATÍSTICAS FINAIS
@@ -204,8 +228,10 @@ def main():
                 logger.warning(f"  - {url}: {error}")
 
         logger.info("")
-        logger.info(f"Arquivo de saída: {CSV_OUTPUT}")
-        logger.info(f"Logs disponíveis em: {LOG_DIR}/")
+        logger.info(f"Arquivo de saída (CSV): out/{CSV_OUTPUT}")
+        logger.info("Log de bancas: out/bancas.log.txt")
+        logger.info("Relatórios: out/")
+        logger.info(f"Logs detalhados: {LOG_DIR}/")
         logger.info("=" * 100)
 
         return 0

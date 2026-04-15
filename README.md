@@ -1,25 +1,5 @@
 # 🚀 Guia Rápido - Novas Funcionalidades
 
-## 📌 O que foi implementado?
-
-### 1. Export CSV com Append Mode
-- **Antes**: Arquivo era substituído a cada execução
-- **Agora**: Dados anteriores são preservados e novos dados são adicionados
-- **Duplicatas**: Removidas automaticamente
-
-### 2. Logging de Bancas
-- **Arquivo**: `out/bancas.log.txt`
-- **Conteúdo**: Lista de bancas processadas + estatísticas completas
-- **Histórico**: Mantém registro de todas as execuções
-
-### 3. Centralização em /out/
-- `provas.csv` - Dados das provas
-- `bancas.log.txt` - Histórico de bancas
-- `error_report.json` - Erros ocorridos
-- `statistics.json` - Estatísticas de execução
-
----
-
 ## 🎯 Como Usar
 
 ### Primeira Execução
@@ -166,7 +146,6 @@ Resultado:
 ### Uso 1: Processamento Periódico
 
 ```bash
-# Executar a cada semana para atualizar dados
 python src/main.py
 
 # Arquivo CSV acumula dados
@@ -185,7 +164,6 @@ python src/main.py
 ```
 
 ### Uso 3: Backup
-
 ```bash
 # Copiar arquivo CSV antes de grande mudança
 cp out/provas.csv out/provas_backup.csv

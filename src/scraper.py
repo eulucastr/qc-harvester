@@ -1,86 +1,79 @@
+"""
+scraper.py - Módulo de scraping principal.
+
+Contém:
+- Função get_roles() - itera por bancas
+- Função get_exams() - coleta provas com paginação
+- Função process_test_urls_parallel() - processa URLs em paralelo
+- Função get_test() - extrai dados de uma prova
+- Estatísticas e logging
+"""
+
 import logging
 import logging.handlers
-import os
-import random
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
 from pathlib import Path
-from threading import Lock, Semaphore
 
-import cloudscraper
 from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter
-from requests.exceptions import ConnectionError, RequestException, Timeout
-from urllib3.util.retry import Retry
+
+from performance import (
+    MAX_PAGES_PER_ROLE,
+    MAX_RETRIES,
+    THREAD_POOL_SIZE,
+    TIMEOUT,
+    create_resilient_scraper,
+    error_stats_lock,
+    rate_limited_get,
+    results_lock,
+)
 
 # ============================================================================
-# CONFIGURAÇÃO DE LOGGING PROFISSIONAL
+# CONFIGURAÇÃO DE LOGGING
 # ============================================================================
 
-# Criar diretório de logs se não existir
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
-# Configurar logger raiz
 logger = logging.getLogger("pci_harvester")
 logger.setLevel(logging.DEBUG)
 
-# Formato detalhado com timestamp
 log_format = logging.Formatter(
     "[%(asctime)s] [%(levelname)-8s] [%(threadName)-15s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-# Handler para arquivo de INFO (progresso geral)
+# Handler para arquivo INFO
 info_handler = logging.handlers.RotatingFileHandler(
     LOG_DIR / "pci_harvester.log",
-    maxBytes=50 * 1024 * 1024,  # 50 MB
+    maxBytes=50 * 1024 * 1024,
     backupCount=10,
 )
 info_handler.setLevel(logging.INFO)
 info_handler.setFormatter(log_format)
 
-# Handler para arquivo de ERRORS (registra todos os erros)
+# Handler para arquivo ERROR
 error_handler = logging.handlers.RotatingFileHandler(
     LOG_DIR / "pci_harvester_errors.log",
-    maxBytes=50 * 1024 * 1024,  # 50 MB
+    maxBytes=50 * 1024 * 1024,
     backupCount=10,
 )
 error_handler.setLevel(logging.ERROR)
 error_handler.setFormatter(log_format)
 
-# Handler para console (progress em tempo real)
+# Handler para console
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(log_format)
 
-# Adicionar handlers ao logger
 logger.addHandler(info_handler)
 logger.addHandler(error_handler)
 logger.addHandler(console_handler)
 
 # ============================================================================
-# CONSTANTES E CONFIGURAÇÕES
+# ESTATÍSTICAS GLOBAIS
 # ============================================================================
 
-MAX_RETRIES = 5
-TIMEOUT = 30
-BACKOFF_FACTOR = 2.0
-THREAD_POOL_SIZE = 24  # 24 workers para processamento massivo
-RATE_LIMIT_DELAY = 0.2  # Delay mínimo entre requisições
-CONNECTION_POOL_SIZE = 100  # Pool grande para muitas conexões simultâneas
-MAX_PAGES_PER_ROLE = 1000  # Limite de segurança para paginação infinita
-
-# ============================================================================
-# LOCKS E SINCRONIZAÇÃO
-# ============================================================================
-
-results_lock = Lock()
-error_stats_lock = Lock()
-rate_limiter = Semaphore(8)  # Máximo 8 requisições simultâneas
-
-# Estatísticas globais (thread-safe)
 stats = {
     "total_urls_collected": 0,
     "successful_tests": 0,
@@ -94,123 +87,78 @@ stats = {
 
 
 # ============================================================================
-# CRIAÇÃO DE SCRAPER COM RETRY STRATEGY
+# GET_ROLES - ITERA POR BANCAS
 # ============================================================================
 
 
-def create_resilient_scraper():
+def get_roles(main_url, bancas_lista):
     """
-    Cria uma sessão do cloudscraper otimizada para processamento em larga escala.
-
-    Características:
-    - Retry strategy com backoff exponencial
-    - Connection pooling agressivo
-    - Timeout configurável
-    - Tratamento de erros 5XX e rate limiting (429)
-    """
-    scraper = cloudscraper.create_scraper()
-
-    retry_strategy = Retry(
-        total=MAX_RETRIES,
-        backoff_factor=BACKOFF_FACTOR,
-        status_forcelist=[408, 429, 500, 502, 503, 504],
-        allowed_methods=["HEAD", "GET", "OPTIONS"],
-        raise_on_status=False,
-    )
-
-    adapter = HTTPAdapter(
-        max_retries=retry_strategy,
-        pool_connections=CONNECTION_POOL_SIZE,
-        pool_maxsize=CONNECTION_POOL_SIZE,
-    )
-
-    scraper.mount("http://", adapter)
-    scraper.mount("https://", adapter)
-
-    return scraper
-
-
-def rate_limited_get(scraper, url, timeout=TIMEOUT):
-    """
-    Requisição GET com rate limiting adaptativo e tratamento robusto.
-
-    NUNCA levanta exceção não capturada:
-    - Retorna response se sucesso
-    - Retorna None se falha (após todas as tentativas)
-    - Registra todos os erros em log
-    """
-    try:
-        with rate_limiter:
-            # Delay com jitter para não parecer ataque
-            delay = RATE_LIMIT_DELAY + random.uniform(0, 0.3)
-            time.sleep(delay)
-
-            response = scraper.get(
-                url, timeout=timeout, verify=True, allow_redirects=True
-            )
-
-            response.raise_for_status()
-            return response
-
-    except (Timeout, ConnectionError) as e:
-        logger.debug(f"Timeout/Conexão em {url}: {type(e).__name__}")
-        return None
-    except RequestException as e:
-        logger.debug(f"Erro de requisição em {url}: {str(e)}")
-        return None
-    except Exception as e:
-        logger.error(f"Erro inesperado em {url}: {type(e).__name__}: {str(e)}")
-        return None
-
-
-# ============================================================================
-# GET_BOARDS - ITERA POR TODOS OS CARGOS
-# ============================================================================
-
-
-def get_boards(main_url, bancas_lista):
-    """
-    Coleta todas as provas por banca.
-    Itera por cada banca da lista e coleta todas as provas de forma paralela.
+    Coleta provas por banca em vez de por cargo.
 
     Args:
-        main_url: URL base (ex: "https://www.pciconcursos.com.br/provas")
-        bancas_lista: Lista de bancas (ex: ['fgv', 'cebraspe', 'cesgranrio'])
+        main_url (str): URL base, ex: "https://www.pciconcursos.com.br/provas"
+        bancas_lista (list): Lista de bancas, ex: ['fgv', 'cebraspe', 'cesgranrio']
 
-    Retorna lista de dicionários com dados das provas.
+    Estratégia:
+    1. Valida entrada
+    2. Para cada banca na lista:
+        - Constrói URL: main_url + "/" + banca
+        - Coleta todas as provas daquela banca (com paginação)
+        - Processa em paralelo com threads
+    3. Retorna lista consolidada de todas as provas
+
+    Estrutura de URL:
+    - Primeira página:  https://www.pciconcursos.com.br/provas/fgv
+    - Segunda página:   https://www.pciconcursos.com.br/provas/fgv/2
+    - Terceira página:  https://www.pciconcursos.com.br/provas/fgv/3
     """
     logger.info("=" * 90)
-    logger.info("PCI CONCURSOS - HARVESTER DE PROVAS EM LARGA ESCALA")
-    logger.info(f"URL Principal: {main_url}")
+    logger.info("PCI CONCURSOS - HARVESTER DE PROVAS POR BANCA")
+    logger.info(f"URL Base: {main_url}")
     logger.info(f"Bancas a processar: {len(bancas_lista)}")
     logger.info(
-        f"Configuração: {MAX_RETRIES} retries, {THREAD_POOL_SIZE} threads, "
-        f"timeout={TIMEOUT}s, rate_limit={RATE_LIMIT_DELAY}s"
+        f"Configuração: {THREAD_POOL_SIZE} threads | {MAX_RETRIES} retries | timeout={TIMEOUT}s | max {MAX_PAGES_PER_ROLE} páginas"
     )
     logger.info("=" * 90)
+
+    # Validação de entrada
+    if not main_url:
+        logger.error("ERRO: main_url não pode estar vazia")
+        return []
+
+    if not bancas_lista or len(bancas_lista) == 0:
+        logger.error("ERRO: bancas_lista não pode estar vazia")
+        return []
+
+    if not isinstance(bancas_lista, list):
+        logger.error(
+            f"ERRO: bancas_lista deve ser uma lista, recebido {type(bancas_lista)}"
+        )
+        return []
 
     stats["start_time"] = time.time()
 
-    if not bancas_lista:
-        logger.error("ERRO: Lista de bancas vazia")
-        return []
-
-    logger.info(f"Iniciando processamento de {len(bancas_lista)} bancas...")
+    logger.info(f"Iniciando coleta de {len(bancas_lista)} banca(s):")
+    for banca in bancas_lista:
+        logger.info(f"  - {banca}")
 
     all_tests = []
 
-    # Processar cada banca iterativamente
+    # ========================================================================
+    # PROCESSAR CADA BANCA
+    # ========================================================================
+
     for idx, banca in enumerate(bancas_lista, 1):
         try:
             # Construir URL da banca
-            banca_url = main_url.rstrip("/") + f"/organizadoras/{banca}"
+            banca_url = main_url.rstrip("/") + "/" + banca.strip()
             banca_name = banca.upper()
 
             logger.info(
-                f"[{idx}/{len(bancas_lista)}] Processando banca: '{banca_name}'"
+                f"\n[{idx}/{len(bancas_lista)}] Processando banca: '{banca_name}' | URL: {banca_url}"
             )
 
-            # Processar banca e coletar provas
+            # Coleta de provas da banca (com paginação + threading)
             banca_tests = get_exams(banca_url, banca_name)
 
             with results_lock:
@@ -220,7 +168,7 @@ def get_boards(main_url, bancas_lista):
 
             logger.info(
                 f"[{idx}/{len(bancas_lista)}] ✓ Banca '{banca_name}' concluída: "
-                f"{len(banca_tests)} provas coletadas"
+                f"{len(banca_tests)} provas coletadas | Total acumulado: {len(all_tests)}"
             )
 
         except Exception as e:
@@ -228,14 +176,15 @@ def get_boards(main_url, bancas_lista):
                 f"[{idx}/{len(bancas_lista)}] ERRO ao processar banca '{banca}': {str(e)}",
                 exc_info=True,
             )
-            # Continua com próxima banca mesmo em caso de erro
             with error_stats_lock:
-                stats["failed_urls"].append((f"/organizadoras/{banca}", str(e)))
+                stats["failed_urls"].append((banca_url, str(e)))
             continue
 
     logger.info(
-        f"Processamento de bancas finalizado: {stats['roles_processed']} de {len(bancas_lista)} bancas"
+        f"\nProcessamento de bancas finalizado: {stats['roles_processed']} de {len(bancas_lista)} banca(s)"
     )
+    logger.info(f"Total geral de provas coletadas: {len(all_tests)}")
+
     return all_tests
 
 
@@ -246,7 +195,7 @@ def get_boards(main_url, bancas_lista):
 
 def get_exams(role_url, cargo_name=""):
     """
-    Coleta todas as provas de um cargo com paginação.
+    Coleta todas as provas de uma banca com paginação.
 
     Estratégia em 2 fases:
     1. Paginação sequencial para coletar URLs (evita race conditions)
@@ -366,7 +315,7 @@ def process_test_urls_parallel(urls, cargo_name=""):
     """
     Processa URLs de provas em paralelo com ThreadPoolExecutor.
 
-    - Usa 24 workers para máxima concorrência
+    - Usa múltiplos workers para máxima concorrência
     - Thread-safe com locks
     - NUNCA levanta exceção que interrompe o script
     - Registra progresso a cada 50 provas
@@ -383,7 +332,7 @@ def process_test_urls_parallel(urls, cargo_name=""):
 
     try:
         with ThreadPoolExecutor(
-            max_workers=THREAD_POOL_SIZE, thread_name_prefix=f"Worker"
+            max_workers=THREAD_POOL_SIZE, thread_name_prefix="Worker"
         ) as executor:
             # Submeter todas as URLs para processamento
             futures = {executor.submit(get_test, url): url for url in urls}
@@ -454,6 +403,14 @@ def get_test(url):
     - Sempre retorna None ou dict
     - Registra todos os erros em log
     - Trata timeout e conexão de forma graceful
+
+    Extrai:
+    - Cargo
+    - Ano
+    - Entidade/Órgão
+    - Banca/Organizadora
+    - Link da prova (PDF) - posição 0
+    - Link do gabarito (PDF) - posição 1
     """
     scraper = create_resilient_scraper()
 
@@ -509,93 +466,3 @@ def get_test(url):
         # Continua mesmo com erro na extração
 
     return test if test else None
-
-
-# ============================================================================
-# EXPORTAÇÃO
-# ============================================================================
-
-
-def export_tests_to_csv(tests, filename="provas.csv"):
-    """
-    Exporta testes para CSV com encoding UTF-8.
-    """
-    import csv
-
-    if not tests:
-        logger.warning("Nenhum teste para exportar")
-        return
-
-    try:
-        keys = tests[0].keys()
-        with open(filename, "w", newline="", encoding="utf-8") as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=keys, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(tests)
-        logger.info(f"✓ Exportação concluída: {len(tests)} provas em '{filename}'")
-    except Exception as e:
-        logger.error(f"Erro ao exportar CSV: {str(e)}", exc_info=True)
-
-
-# ============================================================================
-# MAIN
-# ============================================================================
-
-
-def main():
-    """
-    Função principal de execução.
-    Garante que erros não interrompem o script.
-    """
-    try:
-        main_url = "https://www.pciconcursos.com.br/provas"
-
-        # Lista de bancas a processar
-        bancas_lista = [
-            "fgv",
-        ]
-
-        tests = get_boards(main_url, bancas_lista)
-
-        if tests:
-            export_tests_to_csv(tests)
-
-        # ====================================================================
-        # ESTATÍSTICAS FINAIS
-        # ====================================================================
-
-        stats["end_time"] = time.time()
-        elapsed = stats["end_time"] - stats["start_time"]
-
-        logger.info("=" * 90)
-        logger.info("COLETA FINALIZADA")
-        logger.info("=" * 90)
-        logger.info(f"Tempo total: {elapsed:.2f}s ({elapsed / 60:.2f} minutos)")
-        logger.info(f"Cargos processados: {stats['roles_processed']}")
-        logger.info(f"Páginas processadas: {stats['pages_processed']}")
-        logger.info(f"URLs coletadas: {stats['total_urls_collected']}")
-        logger.info(f"Provas com sucesso: {stats['successful_tests']}")
-        logger.info(f"Provas com erro: {stats['failed_tests']}")
-        logger.info(f"Total de provas exportadas: {len(tests)}")
-
-        if stats["failed_urls"]:
-            logger.warning(f"URLs com erro: {len(stats['failed_urls'])}")
-            for url, error in stats["failed_urls"][:10]:  # Mostrar primeiras 10
-                logger.warning(f"  - {url}: {error}")
-
-        if len(tests) > 0:
-            logger.info(f"Velocidade média: {len(tests) / elapsed:.2f} provas/segundo")
-
-        logger.info("=" * 90)
-        logger.info(f"Logs disponíveis em: {LOG_DIR}/")
-        logger.info("=" * 90)
-
-    except Exception as e:
-        logger.critical(f"ERRO CRÍTICO na execução: {str(e)}", exc_info=True)
-        return 1
-
-    return 0
-
-
-if __name__ == "__main__":
-    exit(main())

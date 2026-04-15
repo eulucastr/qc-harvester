@@ -1,435 +1,103 @@
-"""
-scraper.py - Módulo de scraping principal.
-
-Contém:
-- Função get_roles() - itera por bancas
-- Função get_exams() - coleta provas com paginação
-- Função process_test_urls_parallel() - processa URLs em paralelo
-- Função get_test() - extrai dados de uma prova
-- Estatísticas e logging
-"""
-
-import logging
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
+import cloudscraper
 from bs4 import BeautifulSoup
 
-from performance import (
-    MAX_PAGES_PER_ROLE,
-    MAX_RETRIES,
-    THREAD_POOL_SIZE,
-    TIMEOUT,
-    create_resilient_scraper,
-    error_stats_lock,
-    rate_limited_get,
-    results_lock,
-)
-
-# ============================================================================
-# CONFIGURAÇÃO DE LOGGING
-# ============================================================================
-
-logger = logging.getLogger("pci_harvester")
-
-# ============================================================================
-# ESTATÍSTICAS GLOBAIS
-# ============================================================================
-
-stats = {
-    "total_urls_collected": 0,
-    "successful_tests": 0,
-    "failed_tests": 0,
-    "failed_urls": [],
-    "roles_processed": 0,
-    "pages_processed": 0,
-    "start_time": None,
-    "end_time": None,
-}
+def handle_pagination(soup):
+    total_pages = 1
+    title_tag = soup.find("h2", class_="q-page-results-title")
+    if title_tag:
+        strong_tag = title_tag.find("strong")
+        if strong_tag:
+            try:
+                num_provas = int(strong_tag.get_text(strip=True).replace(".", ""))
+                total_pages = (num_provas // 20) + (1 if num_provas % 20 != 0 else 0)
+            except ValueError:
+                pass
+    return total_pages
 
 
-# ============================================================================
-# GET_ROLES - ITERA POR BANCAS
-# ============================================================================
+def get_tests_from_page(page_url):
+    scraper = cloudscraper.create_scraper()
+    try:
+        response = scraper.get(page_url, timeout=10)
+        response.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(f"Erro ao acessar {page_url}: {e}")
 
+    soup = BeautifulSoup(response.text, "html.parser")
+    tests = []
 
-def get_roles(main_url, bancas_lista):
-    """
-    Coleta provas por banca em vez de por cargo.
+    for item in soup.select(".q-exam-item"):
+        test = {}
 
-    Args:
-        main_url (str): URL base, ex: "https://www.pciconcursos.com.br/provas"
-        bancas_lista (list): Lista de bancas, ex: ['fgv', 'cebraspe', 'cesgranrio']
+        title_span = item.select_one(".q-title")
+        if title_span:
+            title_parts = [part.strip() for part in title_span.get_text().split(" - ")]
+            if len(title_parts) >= 1:
+                test["banca"] = title_parts[0]
+            if len(title_parts) >= 2:
+                test["ano"] = title_parts[1]
+            if len(title_parts) >= 3:
+                test["órgão"] = title_parts[2]
+            if len(title_parts) >= 4:
+                test["cargo"] = title_parts[3]
+            if len(title_parts) >= 5:
+                test["função"] = title_parts[4].replace("Função:", "").strip()
 
-    Estratégia:
-    1. Valida entrada
-    2. Para cada banca na lista:
-        - Constrói URL: main_url + "/" + banca
-        - Coleta todas as provas daquela banca (com paginação)
-        - Processa em paralelo com threads
-    3. Retorna lista consolidada de todas as provas
-
-    Estrutura de URL:
-    - Primeira página:  https://www.pciconcursos.com.br/provas/fgv
-    - Segunda página:   https://www.pciconcursos.com.br/provas/fgv/2
-    - Terceira página:  https://www.pciconcursos.com.br/provas/fgv/3
-    """
-    logger.info("=" * 90)
-    logger.info("PCI CONCURSOS - HARVESTER DE PROVAS POR BANCA")
-    logger.info(f"URL Base: {main_url}")
-    logger.info(f"Bancas a processar: {len(bancas_lista)}")
-    logger.info(
-        f"Configuração: {THREAD_POOL_SIZE} threads | {MAX_RETRIES} retries | timeout={TIMEOUT}s | max {MAX_PAGES_PER_ROLE} páginas"
-    )
-    logger.info("=" * 90)
-
-    # Validação de entrada
-    if not main_url:
-        logger.error("ERRO: main_url não pode estar vazia")
-        return []
-
-    if not bancas_lista or len(bancas_lista) == 0:
-        logger.error("ERRO: bancas_lista não pode estar vazia")
-        return []
-
-    if not isinstance(bancas_lista, list):
-        logger.error(
-            f"ERRO: bancas_lista deve ser uma lista, recebido {type(bancas_lista)}"
-        )
-        return []
-
-    stats["start_time"] = time.time()
-
-    logger.info(f"Iniciando coleta de {len(bancas_lista)} banca(s):")
-    for banca in bancas_lista:
-        logger.info(f"  - {banca}")
-
-    all_tests = []
-
-    # ========================================================================
-    # PROCESSAR CADA BANCA
-    # ========================================================================
-
-    for idx, banca in enumerate(bancas_lista, 1):
-        try:
-            # Construir URL da banca
-            banca_url = main_url.rstrip("/") + "/" + banca.strip()
-            banca_name = banca.upper()
-
-            logger.info(
-                f"\n[{idx}/{len(bancas_lista)}] Processando banca: '{banca_name}' | URL: {banca_url}"
+        date_span = item.select_one(".q-date")
+        if date_span:
+            test["aplicação"] = (
+                date_span.get_text(strip=True).replace("Aplicada em", "").strip()
             )
 
-            # Coleta de provas da banca (com paginação + threading)
-            banca_tests = get_exams(banca_url, banca_name)
+        level_span = item.select_one(".q-level")
+        if level_span:
+            test["escolaridade"] = level_span.get_text(strip=True)
 
-            with results_lock:
-                all_tests.extend(banca_tests)
-                with error_stats_lock:
-                    stats["roles_processed"] += 1
+        dropdown = item.select_one(".dropdown-menu")
+        if dropdown:
+            for link in dropdown.find_all("a"):
+                text = link.get_text(strip=True).lower()
+                href = link.get("href")
+                if "prova" in text:
+                    test["prova"] = href
+                elif "gabarito" in text:
+                    test["gabarito"] = href
+                elif "alterações" in text or "alteracoes" in text:
+                    test["alterações"] = href
+                elif "edital" in text:
+                    test["edital"] = href
 
-            logger.info(
-                f"[{idx}/{len(bancas_lista)}] Banca '{banca_name}' concluída: "
-                f"{len(banca_tests)} provas coletadas | Total acumulado: {len(all_tests)}"
-            )
+        tests.append(test)
 
-        except Exception as e:
-            logger.error(
-                f"[{idx}/{len(bancas_lista)}] ERRO ao processar banca '{banca}': {str(e)}",
-                exc_info=True,
-            )
-            with error_stats_lock:
-                stats["failed_urls"].append(
-                    (
-                        locals().get(
-                            "banca_url", main_url.rstrip("/") + "/" + str(banca).strip()
-                        ),
-                        str(e),
-                    )
-                )
-            continue
-
-    logger.info(
-        f"\nProcessamento de bancas finalizado: {stats['roles_processed']} de {len(bancas_lista)} banca(s)"
-    )
-    logger.info(f"Total geral de provas coletadas: {len(all_tests)}")
-
-    return all_tests
+    return tests
 
 
-# ============================================================================
-# GET_EXAMS - COLETA PROVAS COM PAGINAÇÃO
-# ============================================================================
+def scrape_tests(main_url: str, scraper_config: dict):
+    scraper = cloudscraper.create_scraper()
+    try:
+        response = scraper.get(main_url, timeout=10)
+        response.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(f"Erro ao acessar {main_url}: {e}")
 
+    soup = BeautifulSoup(response.text, "html.parser")
 
-def get_exams(role_url, cargo_name=""):
-    """
-    Coleta todas as provas de uma banca com paginação.
+    total_pages = handle_pagination(soup)
+    tests = []
 
-    Estratégia em 2 fases:
-    1. Paginação sequencial para coletar URLs (evita race conditions)
-    2. Processamento paralelo com ThreadPoolExecutor (máxima velocidade)
-    """
-    scraper = create_resilient_scraper()
-
-    all_test_urls = []
-    end_loop = False
-    count = 1
-    pages_processed = 0
-
-    logger.debug(f"[PAGINAÇÃO] '{cargo_name}': Iniciando coleta de URLs")
-
-    # ========================================================================
-    # FASE 1: COLETA SEQUENCIAL DE URLs COM PAGINAÇÃO
-    # ========================================================================
-
-    while not end_loop and count <= MAX_PAGES_PER_ROLE:
-        try:
-            if count == 1:
-                page_url = role_url
+    for page in range(1, total_pages + 1):
+        query_params = []
+        for key, values in scraper_config.items():
+            if isinstance(values, list):
+                for val in values:
+                    query_params.append(f"{key}[]={val}")
             else:
-                page_url = role_url.rstrip("/") + f"/{count}"
+                query_params.append(f"{key}={values}")
+        query_params.append(f"page={page}")
 
-            response = rate_limited_get(scraper, page_url)
+        query_string = "&".join(query_params)
+        page_url = f"{main_url}?{query_string}"
 
-            if response is None:
-                logger.debug(
-                    f"[PAGINAÇÃO] '{cargo_name}': Falha na página {count}, continuando..."
-                )
-                count += 1
-                continue
+        tests.extend(get_tests_from_page(page_url))
 
-            soup = BeautifulSoup(response.text, "html.parser")
-            pages_processed += 1
-
-            with error_stats_lock:
-                stats["pages_processed"] += 1
-
-            # Verificar se chegou ao final da paginação
-            for p_tag in soup.find_all("p"):
-                try:
-                    p_text = p_tag.get_text(strip=True)
-                    if p_text and "nenhuma prova encontrada" in p_text.lower():
-                        logger.debug(
-                            f"[PAGINAÇÃO] '{cargo_name}': Fim detectado na página {count}"
-                        )
-                        end_loop = True
-                        break
-                except Exception as e:
-                    logger.debug(f"Erro ao processar parágrafo: {e}")
-                    continue
-
-            if end_loop:
-                break
-
-            # Coletar links de provas
-            links = soup.select("a.prova_download")
-
-            if not links:
-                logger.debug(
-                    f"[PAGINAÇÃO] '{cargo_name}': Nenhum link na página {count}"
-                )
-                end_loop = True
-                break
-
-            for link in links:
-                href = link.get("href")
-                if href:
-                    all_test_urls.append(href)
-
-            with error_stats_lock:
-                stats["total_urls_collected"] += len(links)
-
-            logger.debug(
-                f"[PAGINAÇÃO] '{cargo_name}': Página {count} - {len(links)} provas coletadas"
-            )
-
-            count += 1
-
-        except Exception as e:
-            logger.error(
-                f"[PAGINAÇÃO] '{cargo_name}': Erro na página {count}: {str(e)}"
-            )
-            count += 1
-            if count > MAX_PAGES_PER_ROLE:
-                logger.warning(
-                    f"[PAGINAÇÃO] '{cargo_name}': Limite de páginas atingido ({MAX_PAGES_PER_ROLE})"
-                )
-                break
-
-    logger.info(
-        f"[PAGINAÇÃO] '{cargo_name}': {pages_processed} páginas, "
-        f"{len(all_test_urls)} URLs de provas coletadas"
-    )
-
-    # ========================================================================
-    # FASE 2: PROCESSAMENTO PARALELO DAS URLs
-    # ========================================================================
-
-    if not all_test_urls:
-        logger.warning(f"[PARALELO] '{cargo_name}': Nenhuma URL para processar")
-        return []
-
-    return process_test_urls_parallel(all_test_urls, cargo_name)
-
-
-# ============================================================================
-# PROCESSAMENTO PARALELO
-# ============================================================================
-
-
-def process_test_urls_parallel(urls, cargo_name=""):
-    """
-    Processa URLs de provas em paralelo com ThreadPoolExecutor.
-
-    - Usa múltiplos workers para máxima concorrência
-    - Thread-safe com locks
-    - NUNCA levanta exceção que interrompe o script
-    - Registra progresso a cada 50 provas
-    """
-    if not urls:
-        return []
-
-    role_tests = []
-    failed_in_batch = 0
-
-    logger.info(
-        f"[PARALELO] '{cargo_name}': Iniciando processamento de {len(urls)} provas"
-    )
-
-    try:
-        with ThreadPoolExecutor(
-            max_workers=THREAD_POOL_SIZE, thread_name_prefix="Worker"
-        ) as executor:
-            # Submeter todas as URLs para processamento
-            futures = {executor.submit(get_test, url): url for url in urls}
-
-            completed = 0
-            for future in as_completed(futures):
-                completed += 1
-                url = futures[future]
-
-                try:
-                    test = future.result()
-
-                    if test:
-                        with results_lock:
-                            role_tests.append(test)
-
-                        with error_stats_lock:
-                            stats["successful_tests"] += 1
-                    else:
-                        with error_stats_lock:
-                            stats["failed_tests"] += 1
-                        failed_in_batch += 1
-
-                    # Log de progresso a cada 50 provas
-                    if completed % 50 == 0 or completed == len(urls):
-                        progress_pct = int(completed / len(urls) * 100)
-                        logger.info(
-                            f"[PARALELO] '{cargo_name}': {completed}/{len(urls)} "
-                            f"processadas ({progress_pct}%) - {len(role_tests)} sucesso, "
-                            f"{failed_in_batch} erro"
-                        )
-
-                except Exception as e:
-                    logger.error(
-                        f"[PARALELO] Erro ao processar URL: {str(e)}", exc_info=True
-                    )
-                    with error_stats_lock:
-                        stats["failed_tests"] += 1
-                        stats["failed_urls"].append((url, str(e)))
-                    failed_in_batch += 1
-
-    except Exception as e:
-        logger.error(
-            f"[PARALELO] '{cargo_name}': Erro crítico no executor: {str(e)}",
-            exc_info=True,
-        )
-
-    logger.info(
-        f"[PARALELO] '{cargo_name}': Concluído - {len(role_tests)} sucesso, "
-        f"{failed_in_batch} falhas"
-    )
-
-    return role_tests
-
-
-# ============================================================================
-# GET_TEST - EXTRAÇÃO DE DADOS
-# ============================================================================
-
-
-def get_test(url):
-    """
-    Extrai informações de uma prova individual.
-    Executada em thread separada.
-
-    GARANTIAS:
-    - NUNCA levanta exceção não capturada
-    - Sempre retorna None ou dict
-    - Registra todos os erros em log
-    - Trata timeout e conexão de forma graceful
-
-    Extrai:
-    - Cargo
-    - Ano
-    - Entidade/Órgão
-    - Banca/Organizadora
-    - Link da prova (PDF) - posição 0
-    - Link do gabarito (PDF) - posição 1
-    """
-    scraper = create_resilient_scraper()
-
-    try:
-        response = rate_limited_get(scraper, url)
-
-        if response is None:
-            return None
-
-        soup = BeautifulSoup(response.text, "html.parser")
-
-    except Exception as e:
-        logger.error(f"Erro ao carregar prova {url}: {str(e)}")
-        return None
-
-    test = {}
-
-    try:
-        # Extrair cargo, ano, órgão, banca
-        list_items = soup.select("#download .card-body ul li")
-        for li in list_items:
-            text = li.get_text(strip=True)
-
-            if "Cargo:" in text:
-                test["cargo"] = text.replace("Cargo:", "").strip()
-            elif "Ano:" in text:
-                test["ano"] = text.replace("Ano:", "").strip()
-            elif "Órgão:" in text:
-                test["entidade"] = text.replace("Órgão:", "").strip()
-            elif "Organizadora:" in text:
-                test["banca"] = text.replace("Organizadora:", "").strip()
-
-        # Extrair links de prova e gabarito (por posição)
-        download_card = None
-        for card in soup.select("#download .card"):
-            h5 = card.select_one(".card-header h5")
-            if h5 and "Download" in h5.get_text():
-                download_card = card
-                break
-
-        if download_card:
-            download_links = download_card.select(".item-link")
-            for i, link in enumerate(download_links):
-                href = link.get("href")
-                if href:
-                    if i == 0:
-                        test["prova"] = href
-                    elif i == 1:
-                        test["gabarito"] = href
-
-    except Exception as e:
-        logger.error(f"Erro ao extrair dados de {url}: {str(e)}")
-        # Continua mesmo com erro na extração
-
-    return test if test else None
+    return tests

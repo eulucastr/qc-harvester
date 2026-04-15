@@ -22,6 +22,7 @@ __all__ = [
     "get_roles",
     "get_exams",
     "get_test",
+    "stats",
     "export_tests_to_csv",
     "save_error_report",
     "save_statistics_report",

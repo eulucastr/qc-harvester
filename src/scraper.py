@@ -12,7 +12,6 @@ Contém:
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 
 from bs4 import BeautifulSoup
 
@@ -140,7 +139,7 @@ def get_roles(main_url, bancas_lista):
                 exc_info=True,
             )
             with error_stats_lock:
-                stats["failed_urls"].append((banca_url, str(e)))
+                stats["failed_urls"].append((locals().get("banca_url", main_url.rstrip("/") + "/" + str(banca).strip()), str(e)))
             continue
 
     logger.info(
@@ -200,7 +199,6 @@ def get_exams(role_url, cargo_name=""):
                 stats["pages_processed"] += 1
 
             # Verificar se chegou ao final da paginação
-            page_empty = False
             for p_tag in soup.find_all("p"):
                 try:
                     p_text = p_tag.get_text(strip=True)
@@ -208,7 +206,6 @@ def get_exams(role_url, cargo_name=""):
                         logger.debug(
                             f"[PAGINAÇÃO] '{cargo_name}': Fim detectado na página {count}"
                         )
-                        page_empty = True
                         end_loop = True
                         break
                 except Exception as e:

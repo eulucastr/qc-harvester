@@ -1,6 +1,10 @@
 import cloudscraper
 from bs4 import BeautifulSoup
 
+def create_scraper():
+    scraper = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "desktop": True})
+    return scraper
+    
 def handle_pagination(soup):
     total_pages = 1
     title_tag = soup.find("h2", class_="q-page-results-title")
@@ -16,7 +20,7 @@ def handle_pagination(soup):
 
 
 def get_tests_from_page(page_url):
-    scraper = cloudscraper.create_scraper()
+    scraper = create_scraper()
     try:
         response = scraper.get(page_url, timeout=10)
         response.raise_for_status()
@@ -73,7 +77,7 @@ def get_tests_from_page(page_url):
 
 
 def scrape_tests(main_url: str, scraper_config: dict):
-    scraper = cloudscraper.create_scraper()
+    scraper = create_scraper()
     try:
         response = scraper.get(main_url, timeout=10)
         response.raise_for_status()

@@ -1,12 +1,15 @@
-from src.exporters import export_data_to_csv
-from src.scraper import scrape_tests
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
+
+from exporters import export_data_to_csv
+from scraper import scrape_tests
 
 scraper_config: dict = {
     "bancas": [
         { "nome": "FGV", "código": 63 },
-        { "nome": "CEBRASPE", "código": 2 },
     ],
-    "anos": [2020, 2021, 2022, 2023],
+    "anos": [2020],
 }
 
 def main():

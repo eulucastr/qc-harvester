@@ -11,6 +11,7 @@ Contém:
 import csv
 import json
 import logging
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -60,6 +61,16 @@ def export_tests_to_csv(tests, filename="provas.csv"):
 
         if csv_path.exists():
             try:
+                # Criar backup antes de ler e modificar
+                backup_dir = OUT_DIR / "backups"
+                backup_dir.mkdir(exist_ok=True)
+                backup_name = (
+                    f"provas-backup-{datetime.now().strftime('%d-%m-%Y-%H-%M')}.csv"
+                )
+                backup_path = backup_dir / backup_name
+                shutil.copy2(csv_path, backup_path)
+                logger.info(f"Backup criado: {backup_path}")
+
                 with open(csv_path, "r", encoding="utf-8") as csvfile:
                     reader = csv.DictReader(csvfile)
                     for row in reader:
@@ -69,7 +80,7 @@ def export_tests_to_csv(tests, filename="provas.csv"):
                             existing_urls.add(row["prova"])
 
                 logger.info(
-                    f"✓ Arquivo CSV existente carregado: {len(existing_tests)} registros prévios"
+                    f"Arquivo CSV existente carregado: {len(existing_tests)} registros prévios"
                 )
             except Exception as e:
                 logger.warning(f"Aviso ao ler CSV existente: {str(e)}")
@@ -102,7 +113,7 @@ def export_tests_to_csv(tests, filename="provas.csv"):
                 writer.writerows(merged_tests)
 
             logger.info(
-                f"✓ Exportação concluída: {new_tests_added} novas provas adicionadas "
+                f"Exportação concluída: {new_tests_added} novas provas adicionadas "
                 f"(total: {len(merged_tests)}) em '{csv_path}'"
             )
         else:
@@ -234,7 +245,7 @@ def log_bancas_processadas(bancas_lista, stats, elapsed_time):
         with open(log_path, "w", encoding="utf-8") as f:
             f.write(full_content)
 
-        logger.info(f"✓ Log de bancas salvo em '{log_path}'")
+        logger.info(f"Log de bancas salvo em '{log_path}'")
         return True
 
     except Exception as e:
@@ -268,9 +279,7 @@ def export_tests_to_json(tests, filename="provas.json"):
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(tests, f, indent=2, ensure_ascii=False)
 
-        logger.info(
-            f"✓ Exportação JSON concluída: {len(tests)} provas em '{json_path}'"
-        )
+        logger.info(f"Exportação JSON concluída: {len(tests)} provas em '{json_path}'")
         return True
 
     except Exception as e:
@@ -319,7 +328,7 @@ def save_error_report(stats, filename="error_report.json"):
         with open(report_path, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, ensure_ascii=False)
 
-        logger.info(f"✓ Relatório de erros salvo em '{report_path}'")
+        logger.info(f"Relatório de erros salvo em '{report_path}'")
         return True
 
     except Exception as e:
@@ -387,7 +396,7 @@ def save_statistics_report(stats, elapsed_time, filename="statistics.json"):
         with open(report_path, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, ensure_ascii=False)
 
-        logger.info(f"✓ Relatório de estatísticas salvo em '{report_path}'")
+        logger.info(f"Relatório de estatísticas salvo em '{report_path}'")
         return True
 
     except Exception as e:

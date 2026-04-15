@@ -65,6 +65,7 @@ info_handler = logging.handlers.RotatingFileHandler(
     LOG_DIR / "pci_harvester.log",
     maxBytes=50 * 1024 * 1024,
     backupCount=10,
+    encoding="utf-8",
 )
 info_handler.setLevel(logging.INFO)
 info_handler.setFormatter(log_format)
@@ -74,6 +75,7 @@ error_handler = logging.handlers.RotatingFileHandler(
     LOG_DIR / "pci_harvester_errors.log",
     maxBytes=50 * 1024 * 1024,
     backupCount=10,
+    encoding="utf-8",
 )
 error_handler.setLevel(logging.ERROR)
 error_handler.setFormatter(log_format)
@@ -123,11 +125,11 @@ def main():
 
         main_url = "https://www.pciconcursos.com.br/provas"
 
-        logger.info(f"✓ URL Principal: {main_url}")
-        logger.info(f"✓ Bancas a processar: {len(BANCAS_LISTA)}")
-        logger.info(f"✓ Threads: {THREAD_POOL_SIZE}")
-        logger.info(f"✓ Retries: {MAX_RETRIES}")
-        logger.info(f"✓ Timeout: {TIMEOUT}s")
+        logger.info(f"URL Principal: {main_url}")
+        logger.info(f"Bancas a processar: {len(BANCAS_LISTA)}")
+        logger.info(f"Threads: {THREAD_POOL_SIZE}")
+        logger.info(f"Retries: {MAX_RETRIES}")
+        logger.info(f"Timeout: {TIMEOUT}s")
         logger.info("")
 
         # ====================================================================
@@ -145,9 +147,7 @@ def main():
             logger.warning("AVISO: Nenhuma prova foi coletada")
             return 1
 
-        logger.info(
-            f"\n✓ Coleta finalizada: {len(tests)} provas em {elapsed_time:.2f}s"
-        )
+        logger.info(f"\nColeta finalizada: {len(tests)} provas em {elapsed_time:.2f}s")
 
         # ====================================================================
         # EXPORTAÇÃO DE DADOS

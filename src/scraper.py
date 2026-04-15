@@ -129,7 +129,7 @@ def get_roles(main_url, bancas_lista):
                     stats["roles_processed"] += 1
 
             logger.info(
-                f"[{idx}/{len(bancas_lista)}] ✓ Banca '{banca_name}' concluída: "
+                f"[{idx}/{len(bancas_lista)}] Banca '{banca_name}' concluída: "
                 f"{len(banca_tests)} provas coletadas | Total acumulado: {len(all_tests)}"
             )
 
@@ -139,7 +139,14 @@ def get_roles(main_url, bancas_lista):
                 exc_info=True,
             )
             with error_stats_lock:
-                stats["failed_urls"].append((locals().get("banca_url", main_url.rstrip("/") + "/" + str(banca).strip()), str(e)))
+                stats["failed_urls"].append(
+                    (
+                        locals().get(
+                            "banca_url", main_url.rstrip("/") + "/" + str(banca).strip()
+                        ),
+                        str(e),
+                    )
+                )
             continue
 
     logger.info(

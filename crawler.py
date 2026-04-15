@@ -164,20 +164,25 @@ def rate_limited_get(scraper, url, timeout=TIMEOUT):
 
 
 # ============================================================================
-# GET_ROLES - ITERA POR TODOS OS CARGOS
+# GET_BOARDS - ITERA POR TODOS OS CARGOS
 # ============================================================================
 
 
-def get_roles(main_url):
+def get_boards(main_url, bancas_lista):
     """
-    Coleta todos os cargos da página principal.
-    Itera por cada cargo e coleta todas as provas de forma paralela.
+    Coleta todas as provas por banca.
+    Itera por cada banca da lista e coleta todas as provas de forma paralela.
+
+    Args:
+        main_url: URL base (ex: "https://www.pciconcursos.com.br/provas")
+        bancas_lista: Lista de bancas (ex: ['fgv', 'cebraspe', 'cesgranrio'])
 
     Retorna lista de dicionários com dados das provas.
     """
     logger.info("=" * 90)
     logger.info("PCI CONCURSOS - HARVESTER DE PROVAS EM LARGA ESCALA")
     logger.info(f"URL Principal: {main_url}")
+    logger.info(f"Bancas a processar: {len(bancas_lista)}")
     logger.info(
         f"Configuração: {MAX_RETRIES} retries, {THREAD_POOL_SIZE} threads, "
         f"timeout={TIMEOUT}s, rate_limit={RATE_LIMIT_DELAY}s"
@@ -185,75 +190,51 @@ def get_roles(main_url):
     logger.info("=" * 90)
 
     stats["start_time"] = time.time()
-    scraper = create_resilient_scraper()
 
-    # Carregar página principal
-    try:
-        response = rate_limited_get(scraper, main_url)
-        if response is None:
-            logger.error(
-                "FALHA CRÍTICA: Impossível carregar página principal após todas as tentativas"
-            )
-            return []
-
-        soup = BeautifulSoup(response.text, "html.parser")
-    except Exception as e:
-        logger.error(
-            f"FALHA CRÍTICA ao processar página principal: {str(e)}", exc_info=True
-        )
+    if not bancas_lista:
+        logger.error("ERRO: Lista de bancas vazia")
         return []
 
-    # Coletar todos os cargos
-    cargo_links = soup.select("#provas .link-i a")
-    logger.info(f"Encontrados {len(cargo_links)} cargos para processar")
-
-    if not cargo_links:
-        logger.warning("AVISO: Nenhum cargo encontrado na página principal")
-        return []
+    logger.info(f"Iniciando processamento de {len(bancas_lista)} bancas...")
 
     all_tests = []
 
-    # Processar cada cargo iterativamente
-    for idx, link in enumerate(cargo_links, 1):
+    # Processar cada banca iterativamente
+    for idx, banca in enumerate(bancas_lista, 1):
         try:
-            href = link.get("href")
-            cargo_name = link.get_text(strip=True)
+            # Construir URL da banca
+            banca_url = main_url.rstrip("/") + f"/organizadoras/{banca}"
+            banca_name = banca.upper()
 
-            if not href:
-                logger.warning(
-                    f"[{idx}/{len(cargo_links)}] Link sem href encontrado: {cargo_name}"
-                )
-                continue
+            logger.info(
+                f"[{idx}/{len(bancas_lista)}] Processando banca: '{banca_name}'"
+            )
 
-            logger.info(f"[{idx}/{len(cargo_links)}] Processando cargo: '{cargo_name}'")
-
-            # Processar cargo e coletar provas
-            role_tests = get_exams(href, cargo_name)
+            # Processar banca e coletar provas
+            banca_tests = get_exams(banca_url, banca_name)
 
             with results_lock:
-                all_tests.extend(role_tests)
+                all_tests.extend(banca_tests)
                 with error_stats_lock:
                     stats["roles_processed"] += 1
 
             logger.info(
-                f"[{idx}/{len(cargo_links)}] ✓ Cargo '{cargo_name}' concluído: "
-                f"{len(role_tests)} provas coletadas"
+                f"[{idx}/{len(bancas_lista)}] ✓ Banca '{banca_name}' concluída: "
+                f"{len(banca_tests)} provas coletadas"
             )
 
         except Exception as e:
             logger.error(
-                f"[{idx}/{len(cargo_links)}] ERRO ao processar cargo: {str(e)}",
+                f"[{idx}/{len(bancas_lista)}] ERRO ao processar banca '{banca}': {str(e)}",
                 exc_info=True,
             )
-            # Continua com próximo cargo mesmo em caso de erro
+            # Continua com próxima banca mesmo em caso de erro
             with error_stats_lock:
-                stats["failed_urls"].append(
-                    (link.get("href", "URL desconhecida"), str(e))
-                )
+                stats["failed_urls"].append((f"/organizadoras/{banca}", str(e)))
             continue
 
     logger.info(
-        f"Processamento de cargos finalizado: {stats['roles_processed']} de {len(cargo_links)} cargos"
+        f"Processamento de bancas finalizado: {stats['roles_processed']} de {len(bancas_lista)} bancas"
     )
     return all_tests
 
@@ -568,7 +549,13 @@ def main():
     """
     try:
         main_url = "https://www.pciconcursos.com.br/provas"
-        tests = get_roles(main_url)
+
+        # Lista de bancas a processar
+        bancas_lista = [
+            "fgv",
+        ]
+
+        tests = get_boards(main_url, bancas_lista)
 
         if tests:
             export_tests_to_csv(tests)

@@ -1,3 +1,4 @@
+import re
 import time
 
 from bs4 import BeautifulSoup
@@ -8,6 +9,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 _DRIVER = None
+
 
 def create_scraper():
     """Cria e cacheia um único driver Selenium para reutilização"""
@@ -30,24 +32,29 @@ def create_scraper():
         _DRIVER = webdriver.Chrome(options=chrome_options)
     return _DRIVER
 
+
 def close_scraper():
     global _DRIVER
     if _DRIVER is not None:
         _DRIVER.quit()
         _DRIVER = None
 
+
 def handle_pagination(soup):
     total_pages = 1
     title_tag = soup.find("h2", class_="q-page-results-title")
     if title_tag:
-        strong_tag = title_tag.find("strong")
-        if strong_tag:
+        text = title_tag.get_text(strip=False)
+        match = re.search(r"encontradas\s+([\d.]+)\s+provas", text)
+        if match:
             try:
-                num_provas = int(strong_tag.get_text(strip=True).replace(".", ""))
+                num_provas_str = match.group(1).replace(".", "")
+                num_provas = int(num_provas_str)
                 total_pages = (num_provas // 20) + (1 if num_provas % 20 != 0 else 0)
             except ValueError:
                 pass
     return total_pages
+
 
 def get_tests_from_page(page_url):
     driver = create_scraper()
@@ -117,8 +124,19 @@ def get_tests_from_page(page_url):
 
 def scrape_tests(main_url: str, scraper_config: dict):
     driver = create_scraper()
+    start_time = time.time()
+    
+    query_params = []
+    for board in scraper_config.get("bancas", []):
+        query_params.append(f"by_examining_board[]={board.get('codigo', '')}")
+    for year in scraper_config.get("anos", []):
+        query_params.append(f"application_year[]={year}")
+    
+    query_string = "&".join(query_params)
+    page_url = f"{main_url}?{query_string}"
+    
     try:
-        driver.get(main_url)
+        driver.get(page_url)
 
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CLASS_NAME, "q-page-results-title"))
@@ -131,20 +149,19 @@ def scrape_tests(main_url: str, scraper_config: dict):
         raise RuntimeError(f"Erro ao acessar {main_url}: {e}")
 
     total_pages = handle_pagination(soup)
+    print(f"Total de páginas a serem raspadas: {total_pages}")
+    print(f"URL base para raspagem: {page_url}")
+    print(f"Bancas selecionadas: {[board.get('nome', '') for board in scraper_config.get('bancas', [])]}")
+    print(f"Anos selecionados: {scraper_config.get('anos', [])}")
+    
     tests = []
-
     for page in range(1, total_pages + 1):
-        query_params = []
-        for board in scraper_config.get("bancas", []):
-            query_params.append(f"by_examining_board[]={board.get("codigo", "")}")
-        for year in scraper_config.get("anos", []):
-            query_params.append(f"application_year[]={year}")
-
-        query_string = "&".join(query_params)
-        page_url = f"{main_url}?{query_string}"
-
-        print(page_url)
-        print(f"Scraping página {page}...")
+        query_params_pagination = query_params + [f"page={page}"]
+        query_string_pagination = "&".join(query_params_pagination)
+        page_url = f"{main_url}?{query_string_pagination}"
+        tests_len = len(tests)
+        print(f"Raspando página {page}/{total_pages}")
         tests.extend(get_tests_from_page(page_url))
-
+        print(f"✓ {len(tests) - tests_len} provas extraídas da página {page} com sucesso! ")
+        print(f"Total de provas extraídas: {len(tests)} | Tempo percorrido: {round((time.time() - start_time) / 60, 2)} minutos")
     return tests

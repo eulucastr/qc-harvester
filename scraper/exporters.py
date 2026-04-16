@@ -47,28 +47,25 @@ def export_data_to_csv(tests, filename="provas.csv"):
     keys = [
         "banca",
         "ano",
-        "órgão",
+        "instituição",
+        "estado",
         "cargo",
-        "função",
+        "especialidade",
         "aplicação",
         "escolaridade",
-        "prova",
-        "gabarito",
-        "alterações",
-        "edital",
     ]
 
     # Remove duplicatas mantendo ordem
-    # Uma duplicata é quando TODAS as colunas têm os mesmos valores
+    # Uma duplicata é quando todas as colunas têm os mesmos valores
     seen = set()
     unique_tests = []
     for test in combined_tests:
-        # Cria chave única com TODAS as colunas (na ordem de keys)
         key = tuple(test.get(k, "") for k in keys)
         if key not in seen:
             seen.add(key)
             unique_tests.append(test)
-
+    
+    keys.extend([ "prova", "gabarito", "alterações", "edital" ])
     # Escreve o arquivo
     with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=keys)

@@ -8,6 +8,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
+from scraper.helpers import parse_title_parts
+
 from .exporters import log_error
 
 _DRIVER = None
@@ -15,7 +17,6 @@ _PAGES_COUNT = 0
 MAX_PAGES_BEFORE_RESTART = (
     50  # Reinicia o navegador a cada 50 páginas para evitar lentidão
 )
-
 
 def create_scraper(force_restart=False):
     """Cria e cacheia um único driver Selenium com configurações otimizadas"""
@@ -172,16 +173,8 @@ def get_tests_from_page(page_url, page_number, scraper_config, max_retries=3):
                 title_parts = [
                     part.strip() for part in title_span.get_text().split(" - ")
                 ]
-                if len(title_parts) >= 1:
-                    test["banca"] = title_parts[0]
-                if len(title_parts) >= 2:
-                    test["ano"] = title_parts[1]
-                if len(title_parts) >= 3:
-                    test["órgão"] = title_parts[2]
-                if len(title_parts) >= 4:
-                    test["cargo"] = title_parts[3]
-                if len(title_parts) >= 5:
-                    test["função"] = title_parts[4].replace("Função:", "").strip()
+                title_info = parse_title_parts(title_parts)
+                test.update(title_info)
 
             date_span = item.select_one(".q-date")
             if date_span:

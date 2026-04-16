@@ -64,18 +64,18 @@ def parse_title_parts(title_parts: list) -> dict:
 
     if len(title_parts) == 4:
         # banca, ano, instituição, especialidade
-        resultado_especialidade = title_parts[3].replace("Função:", "").strip()
-        if resultado_especialidade:
-            result["especialidade"] = resultado_especialidade
+        resultado_cargo = title_parts[3].replace("Função:", "").strip()
+        if resultado_cargo:
+            result["cargo"] = resultado_cargo
 
     elif len(title_parts) == 5:
         # Checar se a 4ª parte é um estado
         if is_estado(title_parts[3]):
             # banca, ano, instituição, estado, especialidade
             result["estado"] = title_parts[3]
-            resultado_especialidade = title_parts[4].replace("Função:", "").strip()
-            if resultado_especialidade:
-                result["especialidade"] = resultado_especialidade
+            resultado_cargo = title_parts[4].replace("Função:", "").strip()
+            if resultado_cargo:
+                result["cargo"] = resultado_cargo
         else:
             # banca, ano, instituição, cargo, especialidade
             result["cargo"] = title_parts[3]

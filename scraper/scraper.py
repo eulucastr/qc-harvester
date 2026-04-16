@@ -18,6 +18,7 @@ MAX_PAGES_BEFORE_RESTART = (
     50  # Reinicia o navegador a cada 50 páginas para evitar lentidão
 )
 
+
 def create_scraper(force_restart=False):
     """Cria e cacheia um único driver Selenium com configurações otimizadas"""
     global _DRIVER, _PAGES_COUNT
@@ -171,7 +172,7 @@ def get_tests_from_page(page_url, page_number, scraper_config, max_retries=3):
             title_span = item.select_one(".q-title")
             if title_span:
                 title_parts = [
-                    part.strip() for part in title_span.get_text().split(" - ")
+                    part.strip() for part in re.split(r" [-–] ", title_span.get_text())
                 ]
                 title_info = parse_title_parts(title_parts)
                 test.update(title_info)

@@ -94,9 +94,7 @@ def parse_title_parts(title_parts: list) -> dict:
                 result["especialidade"] = resultado_especialidade
         else:
             result["cargo"] = title_parts[3]
-            resultado_especialidade = f"{title_parts[4]} {title_parts[5]}".replace("Função:", "").strip()
+            resultado_especialidade = f"{title_parts[4]} - {title_parts[5]}".replace("Função:", "").strip()
             result["especialidade"] = resultado_especialidade
-        
-
 
     return result

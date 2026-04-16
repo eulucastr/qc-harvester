@@ -17,7 +17,7 @@ def export_data_to_csv(tests, filename="provas.csv"):
         return
 
     # Diretórios
-    out_dir = Path("out")
+    out_dir = Path("/scraper/out")
     backups_dir = out_dir / "backups"
     csv_path = out_dir / filename
 

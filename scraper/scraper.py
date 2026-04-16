@@ -100,7 +100,7 @@ def get_tests_from_page(page_url, page_number, scraper_config, max_retries=3):
     # Reinicia o navegador se atingir o limite para limpar memória e evitar bloqueios
     if _PAGES_COUNT > MAX_PAGES_BEFORE_RESTART:
         print(
-            f"\n  ♻ Reiniciando navegador (página {page_number}) para manter performance..."
+            f"♻ Reiniciando navegador (página {page_number}) para manter performance..."
         )
         create_scraper(force_restart=True)
 

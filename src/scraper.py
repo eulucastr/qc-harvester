@@ -11,11 +11,19 @@ from selenium.webdriver.support.ui import WebDriverWait
 from exporters import log_error
 
 _DRIVER = None
+_PAGES_COUNT = 0
+MAX_PAGES_BEFORE_RESTART = (
+    50  # Reinicia o navegador a cada 50 páginas para evitar lentidão
+)
 
 
-def create_scraper():
+def create_scraper(force_restart=False):
     """Cria e cacheia um único driver Selenium com configurações otimizadas"""
-    global _DRIVER
+    global _DRIVER, _PAGES_COUNT
+
+    if force_restart and _DRIVER is not None:
+        close_scraper()
+
     if _DRIVER is None:
         chrome_options = Options()
         chrome_options.add_argument("--headless")
@@ -31,22 +39,29 @@ def create_scraper():
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option("useAutomationExtension", False)
 
+        # Otimizações extras para estabilidade em longas execuções
+        chrome_options.add_argument("--disable-extensions")
+        chrome_options.add_argument("--disable-notifications")
+        chrome_options.add_argument("--disable-remote-fonts")
+
         # pageLoadStrategy = "eager" retorna após DOMContentLoaded (mais rápido)
         chrome_options.set_capability("pageLoadStrategy", "eager")
 
         _DRIVER = webdriver.Chrome(options=chrome_options)
 
-        # Define timeout de página
+        # Define timeout de página (aumentado para 120s para páginas profundas)
         try:
-            _DRIVER.set_page_load_timeout(90)
+            _DRIVER.set_page_load_timeout(120)
         except Exception:
             pass
+
+        _PAGES_COUNT = 0
 
     return _DRIVER
 
 
 def close_scraper():
-    """Fecha o driver Selenium"""
+    """Fecha o driver Selenium e limpa variáveis"""
     global _DRIVER
     if _DRIVER is not None:
         try:
@@ -75,11 +90,20 @@ def handle_pagination(soup):
 
 def get_tests_from_page(page_url, page_number, scraper_config, max_retries=3):
     """
-    Extrai testes de uma página com retry logic e fallback.
-
-    Em caso de falha em todas as tentativas, retorna lista vazia
-    e registra o erro em log (não lança exceção).
+    Extrai testes de uma página com retry logic, fallback e rotação de navegador.
     """
+    global _PAGES_COUNT
+
+    # Incrementa contador de páginas processadas por este driver
+    _PAGES_COUNT += 1
+
+    # Reinicia o navegador se atingir o limite para limpar memória e evitar bloqueios
+    if _PAGES_COUNT > MAX_PAGES_BEFORE_RESTART:
+        print(
+            f"\n  ♻ Reiniciando navegador (página {page_number}) para manter performance..."
+        )
+        create_scraper(force_restart=True)
+
     driver = create_scraper()
     last_exc = None
     soup = None
@@ -89,8 +113,8 @@ def get_tests_from_page(page_url, page_number, scraper_config, max_retries=3):
             print(f"  → Tentativa {attempt}/{max_retries} para página {page_number}...")
             driver.get(page_url)
 
-            # Aguarda elementos da página carregar (timeout curto por causa de eager mode)
-            WebDriverWait(driver, 15).until(
+            # Aguarda elementos da página carregar (timeout de 20s para o elemento)
+            WebDriverWait(driver, 20).until(
                 EC.presence_of_all_elements_located((By.CLASS_NAME, "q-exam-item"))
             )
 
@@ -116,9 +140,9 @@ def get_tests_from_page(page_url, page_number, scraper_config, max_retries=3):
             except Exception:
                 pass
 
-            # Backoff exponencial entre tentativas
+            # Backoff proporcional ao número da página (páginas mais profundas precisam de mais descanso)
             if attempt < max_retries:
-                wait_time = 3 * attempt
+                wait_time = (3 * attempt) + (page_number // 100)
                 print(f"  ⏳ Aguardando {wait_time}s antes da próxima tentativa...")
                 time.sleep(wait_time)
             else:
@@ -188,8 +212,9 @@ def get_tests_from_page(page_url, page_number, scraper_config, max_retries=3):
     except Exception as e:
         print(f"  ⚠ Erro ao parsear página {page_number}: {e}")
 
-    # Delay entre requisições
-    time.sleep(1)
+    # Delay adaptativo: aumenta o delay base conforme as páginas ficam mais profundas
+    delay = 1.5 + (page_number // 100)
+    time.sleep(delay)
     return tests
 
 

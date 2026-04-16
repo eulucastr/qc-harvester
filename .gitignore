@@ -9,6 +9,7 @@ out/
 *.so
 scraper_config.json
 bancas.json
+temp.json
 
 # Distribution / packaging
 .Python

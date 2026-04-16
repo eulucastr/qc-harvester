@@ -97,7 +97,12 @@ def log_error(page: int, bancas: list, anos: list, error_message: str):
     bancas_str = ", ".join(bancas)
     anos_str = ", ".join(map(str, anos))
 
-    error_entry = f"[{timestamp}] Página {page} - Erro: {error_message}\n  Bancas: {bancas_str} | Anos: {anos_str}\n"
+    error_entry = f"""
+[{timestamp}] ERRO NA RASPAGEM DA PÁGINA {page}
+Bancas: {bancas_str}
+Anos: {anos_str}
+{"=" * 60}
+"""
 
     with open(error_log_path, "a", encoding="utf-8") as log_file:
         log_file.write(error_entry)

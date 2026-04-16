@@ -3,6 +3,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+out_dir = Path("scraper/out")
 
 def export_data_to_csv(tests, filename="provas.csv"):
     """
@@ -17,7 +18,6 @@ def export_data_to_csv(tests, filename="provas.csv"):
         return
 
     # Diretórios
-    out_dir = Path("/scraper/out")
     backups_dir = out_dir / "backups"
     csv_path = out_dir / filename
 
@@ -89,7 +89,6 @@ def log_error(page: int, bancas: list, anos: list, error_message: str):
         anos: Lista de anos sendo raspados
         error_message: Mensagem de erro
     """
-    out_dir = Path("out")
     out_dir.mkdir(exist_ok=True)
 
     error_log_path = out_dir / "errors.log"
@@ -120,7 +119,6 @@ def log_success(bancas: list, anos: list, total_provas: int, tempo_minutos: floa
         total_provas: Quantidade total de provas extraídas nesta execução
         tempo_minutos: Tempo total em minutos
     """
-    out_dir = Path("out")
     out_dir.mkdir(exist_ok=True)
 
     success_log_path = out_dir / "success.log"

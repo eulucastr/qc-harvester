@@ -1,12 +1,8 @@
 import json
-import sys
 import time
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from exporters import export_data_to_csv, log_success
-from scraper import close_scraper, scrape_tests
+from .exporters import export_data_to_csv, log_success
+from .scraper import close_scraper, scrape_tests
 
 # Carrega configuração
 with open("scraper_config.json", "r", encoding="utf-8") as file:

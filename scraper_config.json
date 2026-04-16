@@ -1,6 +1,11 @@
 {
-    "bancas": [
-        { "nome": "FGV", "codigo": 63 }
-    ],
-    "anos": [2021]
+  "bancas": [
+    { "nome": "FCC", "codigo": 1 },
+    { "nome": "CESGRANRIO", "codigo": 5 },
+    { "nome": "CONSULPLAN", "codigo": 41 },
+    { "nome": "QUADRIX", "codigo": 235 },
+    { "nome": "IBFC", "codigo": 189 },
+    { "nome": "VUNESP", "codigo": 152 }
+  ],
+  "anos": [2026, 2025, 2024, 2023, 2022, 2020, 2021, 2019, 2018, 2017, 2016]
 }

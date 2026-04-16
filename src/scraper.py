@@ -1,7 +1,40 @@
-from bs4 import BeautifulSoup
 import time
 
-from performance import scrape_page
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+
+_DRIVER = None
+
+def create_scraper():
+    """Cria e cacheia um único driver Selenium para reutilização"""
+    global _DRIVER
+    if _DRIVER is None:
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument(
+            "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+        )
+        chrome_options.add_argument("--start-maximized")
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option("useAutomationExtension", False)
+
+        _DRIVER = webdriver.Chrome(options=chrome_options)
+    return _DRIVER
+
+def close_scraper():
+    global _DRIVER
+    if _DRIVER is not None:
+        _DRIVER.quit()
+        _DRIVER = None
 
 def handle_pagination(soup):
     total_pages = 1
@@ -16,11 +49,23 @@ def handle_pagination(soup):
                 pass
     return total_pages
 
-
 def get_tests_from_page(page_url):
-    response = scrape_page(page_url)
-    soup = BeautifulSoup(response.text, "html.parser")
-    
+    driver = create_scraper()
+    try:
+        driver.get(page_url)
+
+        # Aguarda o carregamento do conteúdo principal
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_all_elements_located((By.CLASS_NAME, "q-exam-item"))
+        )
+
+        # Aguarda um pouco mais para garantir carregamento completo
+        time.sleep(2)
+
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+    except Exception as e:
+        raise RuntimeError(f"Erro ao acessar {page_url}: {e}")
+
     tests = []
 
     for item in soup.select(".q-exam-item"):
@@ -71,25 +116,35 @@ def get_tests_from_page(page_url):
 
 
 def scrape_tests(main_url: str, scraper_config: dict):
-    response = scrape_page(main_url)
-    soup = BeautifulSoup(response.text, "html.parser")
+    driver = create_scraper()
+    try:
+        driver.get(main_url)
+
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "q-page-results-title"))
+        )
+
+        time.sleep(2)
+
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+    except Exception as e:
+        raise RuntimeError(f"Erro ao acessar {main_url}: {e}")
 
     total_pages = handle_pagination(soup)
     tests = []
 
     for page in range(1, total_pages + 1):
         query_params = []
-        for key, values in scraper_config.items():
-            if isinstance(values, list):
-                for val in values:
-                    query_params.append(f"{key}[]={val}")
-            else:
-                query_params.append(f"{key}={values}")
-        query_params.append(f"page={page}")
+        for board in scraper_config.get("bancas", []):
+            query_params.append(f"by_examining_board[]={board.get("codigo", "")}")
+        for year in scraper_config.get("anos", []):
+            query_params.append(f"application_year[]={year}")
 
         query_string = "&".join(query_params)
         page_url = f"{main_url}?{query_string}"
 
+        print(page_url)
+        print(f"Scraping página {page}...")
         tests.extend(get_tests_from_page(page_url))
 
     return tests

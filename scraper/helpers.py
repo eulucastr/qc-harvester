@@ -30,8 +30,9 @@ ESTADOS_BRASILEIROS = {
 }
 
 def is_estado(text: str) -> bool:
-    """Verifica se o texto é uma sigla de estado brasileiro."""
-    return text.upper() in ESTADOS_BRASILEIROS
+    """Verifica se o texto contém uma sigla de estado brasileiro ou a string região (para casos como "1a Região ")"""
+    
+    return any(estado in text for estado in ESTADOS_BRASILEIROS) or "região" in text.lower()
 
 def parse_title_parts(title_parts: list) -> dict:
     """
@@ -84,11 +85,18 @@ def parse_title_parts(title_parts: list) -> dict:
 
     elif len(title_parts) >= 6:
         # banca, ano, instituição, estado, cargo, especialidade
-        result["estado"] = title_parts[3]
-        result["cargo"] = title_parts[4]
-        resultado_especialidade = title_parts[5].replace("Função:", "").strip()
-        if resultado_especialidade:
+        
+        if is_estado(title_parts[3]):
+            result["estado"] = title_parts[3]
+            result["cargo"] = title_parts[4]
+            resultado_especialidade = title_parts[5].replace("Função:", "").strip()
+            if resultado_especialidade:
+                result["especialidade"] = resultado_especialidade
+        else:
+            result["cargo"] = title_parts[3]
+            resultado_especialidade = f"{title_parts[4]} {title_parts[5]}".replace("Função:", "").strip()
             result["especialidade"] = resultado_especialidade
+        
 
 
     return result

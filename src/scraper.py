@@ -124,9 +124,11 @@ def get_tests_from_page(page_url, page_number, scraper_config, max_retries=3):
             else:
                 # Última tentativa falhou - registra erro e continua
                 error_msg = f"{type(last_exc).__name__}: {str(last_exc)[:200]}"
-                bancas = scraper_config.get("by_examining_board", [])
-                anos = scraper_config.get("application_year", [])
-                log_error(page_number, bancas, anos, error_msg)
+                bancas_nomes = [
+                    b.get("nome", "") for b in scraper_config.get("bancas", [])
+                ]
+                anos = scraper_config.get("anos", [])
+                log_error(page_number, bancas_nomes, anos, error_msg)
                 print(
                     f"  ✗ Página {page_number} falhou após {max_retries} tentativas. Erro registrado em log."
                 )
@@ -199,11 +201,11 @@ def scrape_tests(main_url: str, scraper_config: dict):
     """
     driver = create_scraper()
 
-    # Monta query parameters
+    # Monta query parameters usando os códigos das bancas
     query_params = []
-    for board in scraper_config.get("by_examining_board", []):
-        query_params.append(f"by_examining_board[]={board}")
-    for year in scraper_config.get("application_year", []):
+    for board in scraper_config.get("bancas", []):
+        query_params.append(f"by_examining_board[]={board.get('codigo', '')}")
+    for year in scraper_config.get("anos", []):
         query_params.append(f"application_year[]={year}")
 
     query_string = "&".join(query_params)
@@ -222,13 +224,13 @@ def scrape_tests(main_url: str, scraper_config: dict):
 
     total_pages = handle_pagination(soup)
 
-    # Extrai informações para o log
-    bancas = scraper_config.get("by_examining_board", [])
-    anos = scraper_config.get("application_year", [])
+    # Extrai informações para o log e prints (usando nomes das bancas)
+    bancas_nomes = [b.get("nome", "") for b in scraper_config.get("bancas", [])]
+    anos = scraper_config.get("anos", [])
 
     print(f"\n{'=' * 60}")
     print(f"Total de páginas a raspar: {total_pages}")
-    print(f"Bancas: {bancas}")
+    print(f"Bancas: {bancas_nomes}")
     print(f"Anos: {anos}")
     print(f"{'=' * 60}\n")
 

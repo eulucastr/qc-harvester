@@ -85,7 +85,7 @@ def log_error(page: int, bancas: list, anos: list, error_message: str):
 
     Args:
         page: Número da página que falhou
-        bancas: Lista de IDs das bancas sendo raspadas
+        bancas: Lista de nomes das bancas sendo raspadas
         anos: Lista de anos sendo raspados
         error_message: Mensagem de erro
     """
@@ -94,7 +94,7 @@ def log_error(page: int, bancas: list, anos: list, error_message: str):
 
     error_log_path = out_dir / "errors.log"
     timestamp = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
-    bancas_str = ", ".join(map(str, bancas))
+    bancas_str = ", ".join(bancas)
     anos_str = ", ".join(map(str, anos))
 
     error_entry = f"[{timestamp}] Página {page} - Erro: {error_message}\n  Bancas: {bancas_str} | Anos: {anos_str}\n"

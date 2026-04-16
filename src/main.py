@@ -40,9 +40,9 @@ def main():
         # Calcula tempo total
         tempo_total_minutos = (time.time() - start_time) / 60
 
-        # Extrai informações para log
-        bancas = scraper_config.get("by_examining_board", [])
-        anos = scraper_config.get("application_year", [])
+        # Extrai informações para log (usando nomes das bancas)
+        bancas = [b.get("nome", "") for b in scraper_config.get("bancas", [])]
+        anos = scraper_config.get("anos", [])
 
         # Registra sucesso
         print("\n3. Registrando sucesso em log...")

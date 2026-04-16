@@ -1,31 +1,66 @@
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from exporters import export_data_to_csv
+from exporters import export_data_to_csv, log_success
 from scraper import close_scraper, scrape_tests
 
-with open("scraper_config.json", "r") as file:
+# Carrega configuração
+with open("scraper_config.json", "r", encoding="utf-8") as file:
     scraper_config = json.load(file)
 
+
 def main():
-    main_url: str = "https://www.qconcursos.com/questoes-de-concursos/provas"
+    """
+    Função principal que orquestra todo o processo de scraping,
+    exportação e logging.
+    """
+    start_time = time.time()
+    main_url = "https://www.qconcursos.com/questoes-de-concursos/provas"
 
     try:
-        print("Iniciando scraping...")
-        tests: list = scrape_tests(main_url, scraper_config)
+        print("\n" + "=" * 70)
+        print("INICIANDO RASPAGEM DE PROVAS")
+        print("=" * 70)
 
-        print(f"✓ Scraping concluído! {len(tests)} provas encontradas.")
+        # Faz o scraping
+        print("\n1. Raspando dados...")
+        tests = scrape_tests(main_url, scraper_config)
 
-        print("Exportando dados para CSV...")
+        if not tests:
+            print("⚠ Nenhum teste foi extraído!")
+            return
+
+        print(f"\n2. Exportando {len(tests)} teste(s) para CSV...")
         export_data_to_csv(tests)
-        print("✓ Exportação concluída!")
+
+        # Calcula tempo total
+        tempo_total_minutos = (time.time() - start_time) / 60
+
+        # Extrai informações para log
+        bancas = scraper_config.get("by_examining_board", [])
+        anos = scraper_config.get("application_year", [])
+
+        # Registra sucesso
+        print("\n3. Registrando sucesso em log...")
+        log_success(bancas, anos, len(tests), tempo_total_minutos)
+
+        print("\n" + "=" * 70)
+        print("✓ PROCESSO CONCLUÍDO COM SUCESSO!")
+        print("=" * 70)
+        print(f"Total de provas extraídas: {len(tests)}")
+        print(f"Tempo total: {tempo_total_minutos:.2f} minutos")
+        print("=" * 70 + "\n")
+
     except Exception as e:
-        print(f"✗ Erro durante a execução: {e}")
+        print(f"\n✗ ERRO DURANTE A EXECUÇÃO: {e}")
+        print("Verifique o arquivo de log de erros em /out/errors.log")
+
     finally:
-        print("Fechando navegador...")
+        print("Limpando recursos...")
         close_scraper()
 
 

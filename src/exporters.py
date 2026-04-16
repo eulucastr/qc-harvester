@@ -77,3 +77,64 @@ def export_data_to_csv(tests, filename="provas.csv"):
 
     print(f"✓ Dados exportados para {csv_path}")
     print(f"  Total de testes únicos: {len(unique_tests)}")
+
+
+def log_error(page: int, bancas: list, anos: list, error_message: str):
+    """
+    Registra erros de raspagem em um arquivo de log.
+
+    Args:
+        page: Número da página que falhou
+        bancas: Lista de IDs das bancas sendo raspadas
+        anos: Lista de anos sendo raspados
+        error_message: Mensagem de erro
+    """
+    out_dir = Path("out")
+    out_dir.mkdir(exist_ok=True)
+
+    error_log_path = out_dir / "errors.log"
+    timestamp = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+    bancas_str = ", ".join(map(str, bancas))
+    anos_str = ", ".join(map(str, anos))
+
+    error_entry = f"[{timestamp}] Página {page} - Erro: {error_message}\n  Bancas: {bancas_str} | Anos: {anos_str}\n"
+
+    with open(error_log_path, "a", encoding="utf-8") as log_file:
+        log_file.write(error_entry)
+
+    print(f"⚠ Erro registrado em {error_log_path}")
+
+
+def log_success(bancas: list, anos: list, total_provas: int, tempo_minutos: float):
+    """
+    Registra o sucesso de uma raspagem completa em um arquivo de log.
+
+    Args:
+        bancas: Lista de nomes das bancas raspadas
+        anos: Lista de anos raspados
+        total_provas: Quantidade total de provas extraídas nesta execução
+        tempo_minutos: Tempo total em minutos
+    """
+    out_dir = Path("out")
+    out_dir.mkdir(exist_ok=True)
+
+    success_log_path = out_dir / "success.log"
+    timestamp = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+
+    # Formata as listas para exibição
+    bancas_str = ", ".join(bancas) if bancas else "Nenhuma"
+    anos_str = ", ".join(map(str, anos)) if anos else "Nenhum"
+
+    success_entry = f"""
+[{timestamp}] RASPAGEM CONCLUÍDA COM SUCESSO
+  Bancas: {bancas_str}
+  Anos: {anos_str}
+  Provas extraídas: {total_provas}
+  Tempo total: {tempo_minutos:.2f} minutos
+{"=" * 60}
+"""
+
+    with open(success_log_path, "a", encoding="utf-8") as log_file:
+        log_file.write(success_entry)
+
+    print(f"✓ Sucesso registrado em {success_log_path}")

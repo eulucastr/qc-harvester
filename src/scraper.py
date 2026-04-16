@@ -8,11 +8,13 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
+from exporters import log_error
+
 _DRIVER = None
 
 
 def create_scraper():
-    """Cria e cacheia um único driver Selenium para reutilização"""
+    """Cria e cacheia um único driver Selenium com configurações otimizadas"""
     global _DRIVER
     if _DRIVER is None:
         chrome_options = Options()
@@ -29,18 +31,33 @@ def create_scraper():
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option("useAutomationExtension", False)
 
+        # pageLoadStrategy = "eager" retorna após DOMContentLoaded (mais rápido)
+        chrome_options.set_capability("pageLoadStrategy", "eager")
+
         _DRIVER = webdriver.Chrome(options=chrome_options)
+
+        # Define timeout de página
+        try:
+            _DRIVER.set_page_load_timeout(90)
+        except Exception:
+            pass
+
     return _DRIVER
 
 
 def close_scraper():
+    """Fecha o driver Selenium"""
     global _DRIVER
     if _DRIVER is not None:
-        _DRIVER.quit()
+        try:
+            _DRIVER.quit()
+        except Exception:
+            pass
         _DRIVER = None
 
 
 def handle_pagination(soup):
+    """Extrai o total de páginas do HTML"""
     total_pages = 1
     title_tag = soup.find("h2", class_="q-page-results-title")
     if title_tag:
@@ -56,112 +73,183 @@ def handle_pagination(soup):
     return total_pages
 
 
-def get_tests_from_page(page_url):
+def get_tests_from_page(page_url, page_number, scraper_config, max_retries=3):
+    """
+    Extrai testes de uma página com retry logic e fallback.
+
+    Em caso de falha em todas as tentativas, retorna lista vazia
+    e registra o erro em log (não lança exceção).
+    """
     driver = create_scraper()
-    try:
-        driver.get(page_url)
+    last_exc = None
+    soup = None
 
-        # Aguarda o carregamento do conteúdo principal
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_all_elements_located((By.CLASS_NAME, "q-exam-item"))
-        )
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"  → Tentativa {attempt}/{max_retries} para página {page_number}...")
+            driver.get(page_url)
 
-        # Aguarda um pouco mais para garantir carregamento completo
-        time.sleep(2)
-
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-    except Exception as e:
-        raise RuntimeError(f"Erro ao acessar {page_url}: {e}")
-
-    tests = []
-
-    for item in soup.select(".q-exam-item"):
-        test = {}
-
-        title_span = item.select_one(".q-title")
-        if title_span:
-            title_parts = [part.strip() for part in title_span.get_text().split(" - ")]
-            if len(title_parts) >= 1:
-                test["banca"] = title_parts[0]
-            if len(title_parts) >= 2:
-                test["ano"] = title_parts[1]
-            if len(title_parts) >= 3:
-                test["órgão"] = title_parts[2]
-            if len(title_parts) >= 4:
-                test["cargo"] = title_parts[3]
-            if len(title_parts) >= 5:
-                test["função"] = title_parts[4].replace("Função:", "").strip()
-
-        date_span = item.select_one(".q-date")
-        if date_span:
-            test["aplicação"] = (
-                date_span.get_text(strip=True).replace("Aplicada em", "").strip()
+            # Aguarda elementos da página carregar (timeout curto por causa de eager mode)
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_all_elements_located((By.CLASS_NAME, "q-exam-item"))
             )
 
-        level_span = item.select_one(".q-level")
-        if level_span:
-            test["escolaridade"] = level_span.get_text(strip=True)
+            # Pequeno delay para garantir renderização completa
+            time.sleep(2)
+            soup = BeautifulSoup(driver.page_source, "html.parser")
+            break  # Sucesso
 
-        dropdown = item.select_one(".dropdown-menu")
-        if dropdown:
-            for link in dropdown.find_all("a"):
-                text = link.get_text(strip=True).lower()
-                href = link.get("href")
-                if "prova" in text:
-                    test["prova"] = href
-                elif "gabarito" in text:
-                    test["gabarito"] = href
-                elif "alterações" in text or "alteracoes" in text:
-                    test["alterações"] = href
-                elif "edital" in text:
-                    test["edital"] = href
+        except Exception as e:
+            last_exc = e
+            print(f"  ⚠ Falha na tentativa {attempt}: {type(e).__name__}")
 
-        tests.append(test)
+            # Tenta parar o carregamento e parsear o que já chegou
+            try:
+                driver.execute_script("window.stop();")
+                time.sleep(1)
+                soup = BeautifulSoup(driver.page_source, "html.parser")
 
+                # Verifica se conseguiu extrair algum conteúdo
+                if soup.select(".q-exam-item"):
+                    print(f"  ✓ Carregamento parcial aceito para página {page_number}")
+                    break
+            except Exception:
+                pass
+
+            # Backoff exponencial entre tentativas
+            if attempt < max_retries:
+                wait_time = 3 * attempt
+                print(f"  ⏳ Aguardando {wait_time}s antes da próxima tentativa...")
+                time.sleep(wait_time)
+            else:
+                # Última tentativa falhou - registra erro e continua
+                error_msg = f"{type(last_exc).__name__}: {str(last_exc)[:200]}"
+                bancas = scraper_config.get("by_examining_board", [])
+                anos = scraper_config.get("application_year", [])
+                log_error(page_number, bancas, anos, error_msg)
+                print(
+                    f"  ✗ Página {page_number} falhou após {max_retries} tentativas. Erro registrado em log."
+                )
+                return []
+
+    # Extrai testes da página
+    tests = []
+    if soup is None:
+        return []
+
+    try:
+        for item in soup.select(".q-exam-item"):
+            test = {}
+
+            title_span = item.select_one(".q-title")
+            if title_span:
+                title_parts = [
+                    part.strip() for part in title_span.get_text().split(" - ")
+                ]
+                if len(title_parts) >= 1:
+                    test["banca"] = title_parts[0]
+                if len(title_parts) >= 2:
+                    test["ano"] = title_parts[1]
+                if len(title_parts) >= 3:
+                    test["órgão"] = title_parts[2]
+                if len(title_parts) >= 4:
+                    test["cargo"] = title_parts[3]
+                if len(title_parts) >= 5:
+                    test["função"] = title_parts[4].replace("Função:", "").strip()
+
+            date_span = item.select_one(".q-date")
+            if date_span:
+                test["aplicação"] = (
+                    date_span.get_text(strip=True).replace("Aplicada em", "").strip()
+                )
+
+            level_span = item.select_one(".q-level")
+            if level_span:
+                test["escolaridade"] = level_span.get_text(strip=True)
+
+            dropdown = item.select_one(".dropdown-menu")
+            if dropdown:
+                for link in dropdown.find_all("a"):
+                    text = link.get_text(strip=True).lower()
+                    href = link.get("href")
+                    if "prova" in text:
+                        test["prova"] = href
+                    elif "gabarito" in text:
+                        test["gabarito"] = href
+                    elif "alterações" in text or "alteracoes" in text:
+                        test["alterações"] = href
+                    elif "edital" in text:
+                        test["edital"] = href
+
+            if test:
+                tests.append(test)
+    except Exception as e:
+        print(f"  ⚠ Erro ao parsear página {page_number}: {e}")
+
+    # Delay entre requisições
     time.sleep(1)
     return tests
 
 
 def scrape_tests(main_url: str, scraper_config: dict):
+    """
+    Faz o scraping de todas as páginas.
+    Registra erros em log para páginas que falham.
+    Ao final, registra sucesso com estatísticas.
+    """
     driver = create_scraper()
-    start_time = time.time()
-    
+
+    # Monta query parameters
     query_params = []
-    for board in scraper_config.get("bancas", []):
-        query_params.append(f"by_examining_board[]={board.get('codigo', '')}")
-    for year in scraper_config.get("anos", []):
+    for board in scraper_config.get("by_examining_board", []):
+        query_params.append(f"by_examining_board[]={board}")
+    for year in scraper_config.get("application_year", []):
         query_params.append(f"application_year[]={year}")
-    
+
     query_string = "&".join(query_params)
     page_url = f"{main_url}?{query_string}"
-    
+
+    # Tenta acessar a página inicial para pegar o total de páginas
     try:
         driver.get(page_url)
-
-        WebDriverWait(driver, 10).until(
+        WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.CLASS_NAME, "q-page-results-title"))
         )
-
         time.sleep(2)
-
         soup = BeautifulSoup(driver.page_source, "html.parser")
     except Exception as e:
-        raise RuntimeError(f"Erro ao acessar {main_url}: {e}")
+        raise RuntimeError(f"Erro ao acessar URL inicial {main_url}: {e}")
 
     total_pages = handle_pagination(soup)
-    print(f"Total de páginas a serem raspadas: {total_pages}")
-    print(f"URL base para raspagem: {page_url}")
-    print(f"Bancas selecionadas: {[board.get('nome', '') for board in scraper_config.get('bancas', [])]}")
-    print(f"Anos selecionados: {scraper_config.get('anos', [])}")
-    
+
+    # Extrai informações para o log
+    bancas = scraper_config.get("by_examining_board", [])
+    anos = scraper_config.get("application_year", [])
+
+    print(f"\n{'=' * 60}")
+    print(f"Total de páginas a raspar: {total_pages}")
+    print(f"Bancas: {bancas}")
+    print(f"Anos: {anos}")
+    print(f"{'=' * 60}\n")
+
     tests = []
     for page in range(1, total_pages + 1):
         query_params_pagination = query_params + [f"page={page}"]
         query_string_pagination = "&".join(query_params_pagination)
         page_url = f"{main_url}?{query_string_pagination}"
-        tests_len = len(tests)
-        print(f"Raspando página {page}/{total_pages}")
-        tests.extend(get_tests_from_page(page_url))
-        print(f"✓ {len(tests) - tests_len} provas extraídas da página {page} com sucesso! ")
-        print(f"Total de provas extraídas: {len(tests)} | Tempo percorrido: {round((time.time() - start_time) / 60, 2)} minutos")
+
+        tests_count_before = len(tests)
+
+        print(f"Página {page}/{total_pages}...")
+        page_tests = get_tests_from_page(page_url, page, scraper_config, max_retries=3)
+        tests.extend(page_tests)
+
+        tests_extracted = len(tests) - tests_count_before
+        print(f"✓ {tests_extracted} prova(s) extraída(s) | Total: {len(tests)}\n")
+
+    print(f"\n{'=' * 60}")
+    print("✓ RASPAGEM CONCLUÍDA!")
+    print(f"Total de provas extraídas: {len(tests)}")
+    print(f"{'=' * 60}\n")
+
     return tests

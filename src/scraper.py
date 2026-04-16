@@ -1,10 +1,8 @@
-import cloudscraper
 from bs4 import BeautifulSoup
+import time
 
-def create_scraper():
-    scraper = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "desktop": True})
-    return scraper
-    
+from performance import scrape_page
+
 def handle_pagination(soup):
     total_pages = 1
     title_tag = soup.find("h2", class_="q-page-results-title")
@@ -20,14 +18,9 @@ def handle_pagination(soup):
 
 
 def get_tests_from_page(page_url):
-    scraper = create_scraper()
-    try:
-        response = scraper.get(page_url, timeout=10)
-        response.raise_for_status()
-    except Exception as e:
-        raise RuntimeError(f"Erro ao acessar {page_url}: {e}")
-
+    response = scrape_page(page_url)
     soup = BeautifulSoup(response.text, "html.parser")
+    
     tests = []
 
     for item in soup.select(".q-exam-item"):
@@ -73,17 +66,12 @@ def get_tests_from_page(page_url):
 
         tests.append(test)
 
+    time.sleep(1)
     return tests
 
 
 def scrape_tests(main_url: str, scraper_config: dict):
-    scraper = create_scraper()
-    try:
-        response = scraper.get(main_url, timeout=10)
-        response.raise_for_status()
-    except Exception as e:
-        raise RuntimeError(f"Erro ao acessar {main_url}: {e}")
-
+    response = scrape_page(main_url)
     soup = BeautifulSoup(response.text, "html.parser")
 
     total_pages = handle_pagination(soup)

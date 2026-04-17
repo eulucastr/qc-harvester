@@ -32,7 +32,10 @@ ESTADOS_BRASILEIROS = {
 def is_estado(text: str) -> bool:
     """Verifica se o texto contém uma sigla de estado brasileiro ou a string região (para casos como "1a Região ")"""
     
-    return any(estado in text for estado in ESTADOS_BRASILEIROS) or "região" in text.lower()
+    if (len(text) == 2):
+        return any(estado in text for estado in ESTADOS_BRASILEIROS)
+    
+    return any(f" {estado} " in text for estado in ESTADOS_BRASILEIROS) or "região" in text.lower()
 
 def parse_title_parts(title_parts: list) -> dict:
     """

@@ -2,7 +2,7 @@
 __pycache__/
 *.py[codz]
 *$py.class
-.csv 
+*.csv 
 /out
 out/
 # C extensions
@@ -10,6 +10,7 @@ out/
 scraper_config.json
 bancas.json
 temp.json
+*.db
 
 # Distribution / packaging
 .Python

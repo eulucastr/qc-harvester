@@ -28,9 +28,10 @@ def inicializar_banco():
             edital_url TEXT,
             status_download TEXT DEFAULT 'pendente',
             status_extracao TEXT DEFAULT 'pendente',
+            prova_path TEXT,
+            gabarito_path TEXT,
             prova_md TEXT,
             gabarito_md TEXT,
-            questoes_json TEXT,
             data_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')

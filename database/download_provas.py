@@ -30,7 +30,7 @@ os.makedirs(f"{BASE_DIR}/gabaritos", exist_ok=True)
 
 def limpar_nome_arquivo(nome):
     """Remove caracteres que o Windows proíbe em nomes de arquivos"""
-    return re.sub(r'[\\/*?:\"<>|]', "_", str(nome)).lower()
+    return re.sub(r"[\\/*?:\"<>|]", "_", str(nome)).lower()
 
 
 def obter_user_agent_aleatorio():
@@ -74,6 +74,9 @@ async def baixar_ficheiro(
                     f.write(response.content)
                 print(f"✅ {tipo} {id_prova} baixado com sucesso")
                 return caminho_final
+            elif response.status_code == 403:
+                print(f"⛔ Erro 403 (não autorizado) ao baixar {tipo} {id_prova}")
+                return "nao_autorizado"
             else:
                 print(f"⚠️ Erro {response.status_code} ao baixar {tipo} {id_prova}")
                 return False
@@ -100,20 +103,33 @@ async def processar_linha(client, row, semaphore, conn, db_lock):
     try:
         async with semaphore:
             print(f"🚀 Iniciando ID {id_prova}...")
-            
+
             nome_base = f"{instituicao}_{cargo}_{ano}"
             nome_banca = limpar_nome_arquivo(banca) if banca else "outras"
-            
+
             pasta_prova = os.path.join(BASE_DIR, "provas", nome_banca)
             pasta_gabarito = os.path.join(BASE_DIR, "gabaritos", nome_banca)
 
-            path_p = await baixar_ficheiro(client, url_p, pasta_prova, id_prova, "prova", nome_base)
+            path_p = await baixar_ficheiro(
+                client, url_p, pasta_prova, id_prova, "prova", nome_base
+            )
             await sleep_aleatorio()
-            path_g = await baixar_ficheiro(client, url_g, pasta_gabarito, id_prova, "gabarito", nome_base)
-
+            path_g = await baixar_ficheiro(
+                client, url_g, pasta_gabarito, id_prova, "gabarito", nome_base
+            )
+            
+            if path_p == "nao_autorizado" or path_g == "nao_autorizado":
+                print(f"⚠️ ID {id_prova} não autorizado para download. Marcando como 'nao_autorizado' no banco.")
+                async with db_lock:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "UPDATE concursos SET status_download = 'nao_autorizado' WHERE id = ?",
+                        (id_prova,),
+                    )
+                    conn.commit()
+                return
             if path_p and path_g:
                 try:
-                    # 🛑 A MÁGICA ACONTECE AQUI: O Lock do Banco!
                     async with db_lock:
                         cursor = conn.cursor()
                         cursor.execute(
@@ -124,17 +140,17 @@ async def processar_linha(client, row, semaphore, conn, db_lock):
                     print(f"✅ ID {id_prova} finalizado.")
                 except sqlite3.OperationalError as db_err:
                     print(f"⚠️ Erro de gravação no banco no ID {id_prova}: {db_err}")
-                    
+
     except Exception as e:
         print(f"💥 Erro fatal inesperado no ID {id_prova}: {e}")
 
 
 async def main():
     conn = sqlite3.connect(DB_NAME)
-    
+
     # 💡 Aumentar o timeout nativo do SQLite também ajuda como camada extra de defesa
-    # conn = sqlite3.connect(DB_NAME, timeout=10.0) 
-    
+    # conn = sqlite3.connect(DB_NAME, timeout=10.0)
+
     cursor = conn.cursor()
 
     cursor.execute(
@@ -147,14 +163,14 @@ async def main():
         return
 
     semaphore = asyncio.Semaphore(CONCURRENT_DOWNLOADS)
-    
-    db_lock = asyncio.Lock() 
+
+    db_lock = asyncio.Lock()
 
     limits = httpx.Limits(max_connections=CONCURRENT_DOWNLOADS + 5)
     async with httpx.AsyncClient(limits=limits) as client:
         # Passamos o db_lock para cada linha processada
         tasks = [processar_linha(client, row, semaphore, conn, db_lock) for row in rows]
-        
+
         # Mantemos o return_exceptions=True para resiliência
         await asyncio.gather(*tasks, return_exceptions=True)
 

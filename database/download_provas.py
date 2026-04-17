@@ -10,7 +10,7 @@ import httpx
 DB_NAME = "mentoria-provas.db"
 BASE_DIR = "D:/mentor.ia"
 CONCURRENT_DOWNLOADS = (
-    5  # Quantos downloads simultâneos (não exagere para não ser bloqueado)
+    10  # Quantos downloads simultâneos (não exagere para não ser bloqueado)
 )
 
 # User-Agents rotativos para parecer navegador real
@@ -40,7 +40,7 @@ def obter_user_agent_aleatorio():
 
 async def sleep_aleatorio():
     """Espera um tempo aleatório entre 3 e 7 segundos para não parecer robótico"""
-    delay = random.uniform(3, 7)
+    delay = random.uniform(1, 3)
     await asyncio.sleep(delay)
 
 
@@ -94,47 +94,49 @@ async def baixar_ficheiro(
     return False
 
 
-async def processar_linha(client, row, semaphore, conn):
+async def processar_linha(client, row, semaphore, conn, db_lock):
     id_prova, banca, ano, instituicao, cargo, url_p, url_g = row
 
-    # O Semaphore controla quantos downloads ocorrem ao mesmo tempo
-    async with semaphore:
-        print(f"🚀 Iniciando ID {id_prova}...")
+    try:
+        async with semaphore:
+            print(f"🚀 Iniciando ID {id_prova}...")
+            
+            nome_base = f"{instituicao}_{cargo}_{ano}"
+            nome_banca = limpar_nome_arquivo(banca) if banca else "outras"
+            
+            pasta_prova = os.path.join(BASE_DIR, "provas", nome_banca)
+            pasta_gabarito = os.path.join(BASE_DIR, "gabaritos", nome_banca)
 
-        # Criamos um nome base limpo
-        nome_base = f"{instituicao}_{cargo}_{ano}"
+            path_p = await baixar_ficheiro(client, url_p, pasta_prova, id_prova, "prova", nome_base)
+            await sleep_aleatorio()
+            path_g = await baixar_ficheiro(client, url_g, pasta_gabarito, id_prova, "gabarito", nome_base)
 
-        # Definimos as pastas incluindo a banca
-        pasta_prova = os.path.join(BASE_DIR, "provas", limpar_nome_arquivo(banca))
-        pasta_gabarito = os.path.join(BASE_DIR, "gabaritos", limpar_nome_arquivo(banca))
-
-        path_p = await baixar_ficheiro(
-            client, url_p, pasta_prova, id_prova, "prova", nome_base
-        )
-
-        # Sleep aleatório entre downloads de prova e gabarito
-        await sleep_aleatorio()
-
-        path_g = await baixar_ficheiro(
-            client, url_g, pasta_gabarito, id_prova, "gabarito", nome_base
-        )
-
-        if path_p and path_g:
-            cursor = conn.cursor()
-            # Atualizamos o status E salvamos o caminho onde o arquivo foi parar
-            cursor.execute(
-                "UPDATE concursos SET status_download = 'concluido', prova_path = ?, gabarito_path = ? WHERE id = ?",
-                (path_p, path_g, id_prova),
-            )
-            conn.commit()
-            print(f"✅ ID {id_prova} finalizado.")
+            if path_p and path_g:
+                try:
+                    # 🛑 A MÁGICA ACONTECE AQUI: O Lock do Banco!
+                    async with db_lock:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "UPDATE concursos SET status_download = 'concluido', prova_path = ?, gabarito_path = ? WHERE id = ?",
+                            (path_p, path_g, id_prova),
+                        )
+                        conn.commit()
+                    print(f"✅ ID {id_prova} finalizado.")
+                except sqlite3.OperationalError as db_err:
+                    print(f"⚠️ Erro de gravação no banco no ID {id_prova}: {db_err}")
+                    
+    except Exception as e:
+        print(f"💥 Erro fatal inesperado no ID {id_prova}: {e}")
 
 
 async def main():
     conn = sqlite3.connect(DB_NAME)
+    
+    # 💡 Aumentar o timeout nativo do SQLite também ajuda como camada extra de defesa
+    # conn = sqlite3.connect(DB_NAME, timeout=10.0) 
+    
     cursor = conn.cursor()
 
-    # Busca apenas o que ainda não foi baixado
     cursor.execute(
         "SELECT id, banca, ano, instituicao, cargo, prova_url, gabarito_url FROM concursos WHERE status_download = 'pendente'"
     )
@@ -145,10 +147,16 @@ async def main():
         return
 
     semaphore = asyncio.Semaphore(CONCURRENT_DOWNLOADS)
+    
+    db_lock = asyncio.Lock() 
 
-    async with httpx.AsyncClient() as client:
-        tasks = [processar_linha(client, row, semaphore, conn) for row in rows]
-        await asyncio.gather(*tasks)
+    limits = httpx.Limits(max_connections=CONCURRENT_DOWNLOADS + 5)
+    async with httpx.AsyncClient(limits=limits) as client:
+        # Passamos o db_lock para cada linha processada
+        tasks = [processar_linha(client, row, semaphore, conn, db_lock) for row in rows]
+        
+        # Mantemos o return_exceptions=True para resiliência
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     conn.close()
 

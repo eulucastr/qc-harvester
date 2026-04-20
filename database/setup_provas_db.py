@@ -30,9 +30,8 @@ def inicializar_banco():
             status_extracao TEXT DEFAULT 'pendente',
             prova_path TEXT,
             gabarito_path TEXT,
-            prova_md TEXT,
-            gabarito_md TEXT,
             data_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            questoes_path TEXT,
         )
     ''')
     

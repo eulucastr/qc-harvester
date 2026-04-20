@@ -11,6 +11,7 @@ scraper_config.json
 bancas.json
 temp.json
 *.db
+temp/
 
 # Distribution / packaging
 .Python

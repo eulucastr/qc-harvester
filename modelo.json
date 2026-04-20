@@ -1,0 +1,37 @@
+{
+  "questões": [
+    {
+      "numero": 1,
+      "texto": "Texto ao qual a questão faz referência",
+      "enunciado": "Texto da questão",
+      "imagens": [
+        {
+          "index_da_pagina": 3, 
+          "coordenadas": [150, 20, 450, 980]
+        }
+      ],
+      "alternativas": {
+        "a": "Texto da alternativa A",
+        "b": "Texto da alternativa B",
+        "c": "Texto da alternativa C",
+        "d": "Texto da alternativa D",
+        "e": "Texto da alternativa E"
+      },
+      "certo_ou_errado": false,
+      "matéria": "Matéria da questão",
+      "assunto": "Assunto da questão",
+      "gabarito": "Letra da alternativa correta ou 'certo' ou 'errado'"
+    }
+  ],
+  "discursivas": [
+    {
+      "numero": 1,
+      "enunciado": "Texto da questão",
+      "linhas": {
+        "minimo": 20,
+        "maximo": 30
+      }
+    }
+  ]
+}
+

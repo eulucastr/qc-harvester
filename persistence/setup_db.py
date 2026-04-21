@@ -29,8 +29,15 @@ def initialize_db():
             status_extracao TEXT DEFAULT 'pendente',
             prova_path TEXT,
             gabarito_path TEXT,
-            data_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            questoes_path TEXT,
+            data_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            questoes_path TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS questoes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            enunciado TEXT
         )
     ''')
     

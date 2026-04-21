@@ -150,9 +150,6 @@ async def process_row(client, row, semaphore, conn, db_lock):
 async def main():
     conn = sqlite3.connect(DB_NAME)
 
-    # 💡 Aumentar o timeout nativo do SQLite também ajuda como camada extra de defesa
-    # conn = sqlite3.connect(DB_NAME, timeout=10.0)
-
     cursor = conn.cursor()
 
     cursor.execute(
@@ -170,10 +167,7 @@ async def main():
 
     limits = httpx.Limits(max_connections=CONCURRENT_DOWNLOADS + 5)
     async with httpx.AsyncClient(limits=limits) as client:
-        # Passamos o db_lock para cada linha processada
         tasks = [process_row(client, row, semaphore, conn, db_lock) for row in rows]
-
-        # Mantemos o return_exceptions=True para resiliência
         await asyncio.gather(*tasks, return_exceptions=True)
 
     conn.close()

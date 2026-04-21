@@ -4,7 +4,7 @@ __pycache__/
 *$py.class
 *.csv 
 /out
-out/
+output/
 # C extensions
 *.so
 scraper_config.json

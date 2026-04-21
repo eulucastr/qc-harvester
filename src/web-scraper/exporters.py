@@ -3,7 +3,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-out_dir = Path("scraper/out")
+out_dir = Path("output/web-scraper")
 
 def export_data_to_csv(tests, filename="provas.csv"):
     """

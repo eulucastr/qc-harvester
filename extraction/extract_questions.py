@@ -139,7 +139,7 @@ def process_test(pasta_prova: str, pasta_gabarito: str) -> Optional[str]:
         return None
 
     if not imgs_prova or not imgs_gabarito:
-        print(f"  ❌ Imagens não encontradas")
+        print("  ❌ Imagens não encontradas")
         return None
 
     # Montar conteúdo
@@ -169,7 +169,7 @@ def process_test(pasta_prova: str, pasta_gabarito: str) -> Optional[str]:
                 temperature=0.1,
             ),
         )
-        print(f"  ✅ Resposta recebida")
+        print("  ✅ Resposta recebida")
         return response.text
     except Exception as e:
         print(f"  ❌ Erro na IA: {e}")
@@ -239,7 +239,7 @@ def extrair_imagens_questoes(
 
     questoes = dados.get("questoes", [])
     if not questoes:
-        print(f"  ⚠️  Nenhuma questão encontrada no JSON")
+        print("  ⚠️  Nenhuma questão encontrada no JSON")
         return
 
     print(f"  🖼️  Extraindo imagens de {len(questoes)} questões...")
@@ -258,23 +258,15 @@ def extrair_imagens_questoes(
             if index_pagina is None or not coordenadas:
                 continue
 
-            # Determinar qual pasta (prova ou gabarito)
-            if index_pagina == 0:
-                pasta_origem = pasta_prova
-                tipo = "prova"
-            else:
-                pasta_origem = pasta_gabarito
-                tipo = "gabarito"
-
             # Caminho da página original
-            pagina_original = os.path.join(pasta_origem, f"{index_pagina}.png")
+            pagina_original = os.path.join(pasta_prova, f"{index_pagina}.png")
 
             if not os.path.exists(pagina_original):
                 print(f"    ⚠️  Página {index_pagina} não encontrada")
                 continue
 
             # Caminho de saída
-            pasta_questoes_imagens = os.path.join(IMAGES_DIR, f"{concurso_id}-questoes")
+            pasta_questoes_imagens = os.path.join(IMAGES_DIR, f"{concurso_id}")
             if idx > 0:
                 nome_arquivo = f"{numero}_{idx}.png"
             else:
@@ -403,7 +395,7 @@ async def processar_concurso_ia(
         print(f"  💾 JSON salvo: {os.path.basename(caminho_json)}")
 
         # Extrair imagens das questões
-        print(f"  🖼️  Extraindo imagens...")
+        print("  🖼️  Extraindo imagens...")
         extrair_imagens_questoes(
             resultado_json, pasta_prova, pasta_gabarito, concurso_id
         )
@@ -449,7 +441,7 @@ async def processar_batch_ia(batch, conversoes, semaphore, conn, output_dir, loo
     else:
         resultados = []
 
-    print(f"✅ Fase 2 concluída\n")
+    print("✅ Fase 2 concluída\n")
     return resultados
 
 

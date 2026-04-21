@@ -5,9 +5,8 @@ from .exporters import export_data_to_csv, log_success
 from .scraper import close_scraper, scrape_tests
 
 # Carrega configuração
-with open("scraper_config.json", "r", encoding="utf-8") as file:
+with open("config/scraper_config.json", "r", encoding="utf-8") as file:
     scraper_config = json.load(file)
-
 
 def main():
     """

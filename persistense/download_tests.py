@@ -28,121 +28,123 @@ os.makedirs(f"{BASE_DIR}/provas", exist_ok=True)
 os.makedirs(f"{BASE_DIR}/gabaritos", exist_ok=True)
 
 
-def limpar_nome_arquivo(nome):
+def clean_filename(name):
     """Remove caracteres que o Windows proíbe em nomes de arquivos"""
-    return re.sub(r"[\\/*?:\"<>|]", "_", str(nome)).lower()
+    return re.sub(r"[\\/*?:\"<>|]", "_", str(name)).lower()
 
 
-def obter_user_agent_aleatorio():
+def get_random_user_agent():
     """Retorna um User-Agent aleatório para simular navegadores diferentes"""
     return random.choice(USER_AGENTS)
 
 
-async def sleep_aleatorio():
+async def random_sleep():
     """Espera um tempo aleatório entre 3 e 7 segundos para não parecer robótico"""
     delay = random.uniform(1, 3)
     await asyncio.sleep(delay)
 
 
-async def baixar_ficheiro(
-    client, url, pasta, id_prova, tipo, nome_arquivo, max_retries=3
+async def download_file(
+    client, url, folder, exam_id, file_type, file_name, max_retries=3
 ):
     if not url or str(url).strip() == "" or str(url) == "nan":
         return False
 
-    os.makedirs(pasta, exist_ok=True)
+    os.makedirs(folder, exist_ok=True)
 
-    extensao = ".pdf"
-    nome_limpo = limpar_nome_arquivo(nome_arquivo)
-    nome_ficheiro = f"{id_prova}_{tipo}_{nome_limpo}{extensao}"
-    caminho_final = os.path.join(pasta, nome_ficheiro)
+    extension = ".pdf"
+    clean_name = clean_filename(file_name)
+    filename = f"{exam_id}_{file_type}_{clean_name}{extension}"
+    final_path = os.path.join(folder, filename)
 
     # Backoff exponencial: começa em 1 minuto (60 segundos)
-    delay_base = 60
+    base_delay = 60
 
-    for tentativa in range(max_retries):
+    for attempt in range(max_retries):
         try:
             # User-Agent aleatório para cada requisição
-            headers = {"User-Agent": obter_user_agent_aleatorio()}
+            headers = {"User-Agent": get_random_user_agent()}
 
             response = await client.get(
                 url, headers=headers, timeout=30.0, follow_redirects=True
             )
 
             if response.status_code == 200:
-                with open(caminho_final, "wb") as f:
+                with open(final_path, "wb") as f:
                     f.write(response.content)
-                print(f"✅ {tipo} {id_prova} baixado com sucesso")
-                return caminho_final
+                print(f"✅ {file_type} {exam_id} baixado com sucesso")
+                return final_path
             elif response.status_code == 403:
-                print(f"⛔ Erro 403 (não autorizado) ao baixar {tipo} {id_prova}")
+                print(f"⛔ Erro 403 (não autorizado) ao baixar {file_type} {exam_id}")
                 return "nao_autorizado"
             else:
-                print(f"⚠️ Erro {response.status_code} ao baixar {tipo} {id_prova}")
+                print(f"⚠️ Erro {response.status_code} ao baixar {file_type} {exam_id}")
                 return False
 
         except Exception as e:
-            tentativa_atual = tentativa + 1
+            current_attempt = attempt + 1
             print(
-                f"❌ Erro na conexão {tipo} {id_prova}: {e} (tentativa {tentativa_atual}/{max_retries})"
+                f"❌ Erro na conexão {file_type} {exam_id}: {e} (tentativa {current_attempt}/{max_retries})"
             )
 
             # Se não for a última tentativa, aplicar backoff exponencial
-            if tentativa_atual < max_retries:
-                delay = delay_base * (2**tentativa)  # 1 min, 2 min, 4 min...
+            if current_attempt < max_retries:
+                delay = base_delay * (2**attempt)  # 1 min, 2 min, 4 min...
                 print(f"⏳ Aguardando {delay}s antes de tentar novamente...")
                 await asyncio.sleep(delay)
 
-    print(f"❌ Falha ao baixar {tipo} {id_prova} após {max_retries} tentativas")
+    print(f"❌ Falha ao baixar {file_type} {exam_id} após {max_retries} tentativas")
     return False
 
 
-async def processar_linha(client, row, semaphore, conn, db_lock):
-    id_prova, banca, ano, instituicao, cargo, url_p, url_g = row
+async def process_row(client, row, semaphore, conn, db_lock):
+    exam_id, board, year, institution, position, url_exam, url_answer = row
 
     try:
         async with semaphore:
-            print(f"🚀 Iniciando ID {id_prova}...")
+            print(f"🚀 Iniciando ID {exam_id}...")
 
-            nome_base = f"{instituicao}_{cargo}_{ano}"
-            nome_banca = limpar_nome_arquivo(banca) if banca else "outras"
+            base_name = f"{institution}_{position}_{year}"
+            board_name = clean_filename(board) if board else "outras"
 
-            pasta_prova = os.path.join(BASE_DIR, "provas", nome_banca)
-            pasta_gabarito = os.path.join(BASE_DIR, "gabaritos", nome_banca)
+            exam_folder = os.path.join(BASE_DIR, "provas", board_name)
+            answer_folder = os.path.join(BASE_DIR, "gabaritos", board_name)
 
-            path_p = await baixar_ficheiro(
-                client, url_p, pasta_prova, id_prova, "prova", nome_base
+            path_exam = await download_file(
+                client, url_exam, exam_folder, exam_id, "prova", base_name
             )
-            await sleep_aleatorio()
-            path_g = await baixar_ficheiro(
-                client, url_g, pasta_gabarito, id_prova, "gabarito", nome_base
+            await random_sleep()
+            path_answer = await download_file(
+                client, url_answer, answer_folder, exam_id, "gabarito", base_name
             )
-            
-            if path_p == "nao_autorizado" or path_g == "nao_autorizado":
-                print(f"⚠️ ID {id_prova} não autorizado para download. Marcando como 'nao_autorizado' no banco.")
+
+            if path_exam == "nao_autorizado" or path_answer == "nao_autorizado":
+                print(
+                    f"⚠️ ID {exam_id} não autorizado para download. Marcando como 'nao_autorizado' no banco."
+                )
                 async with db_lock:
                     cursor = conn.cursor()
                     cursor.execute(
                         "UPDATE concursos SET status_download = 'nao_autorizado' WHERE id = ?",
-                        (id_prova,),
+                        (exam_id,),
                     )
                     conn.commit()
                 return
-            if path_p and path_g:
+            if path_exam and path_answer:
                 try:
                     async with db_lock:
                         cursor = conn.cursor()
                         cursor.execute(
                             "UPDATE concursos SET status_download = 'concluido', prova_path = ?, gabarito_path = ? WHERE id = ?",
-                            (path_p, path_g, id_prova),
+                            (path_exam, path_answer, exam_id),
                         )
                         conn.commit()
-                    print(f"✅ ID {id_prova} finalizado.")
+                    print(f"✅ ID {exam_id} finalizado.")
                 except sqlite3.OperationalError as db_err:
-                    print(f"⚠️ Erro de gravação no banco no ID {id_prova}: {db_err}")
+                    print(f"⚠️ Erro de gravação no banco no ID {exam_id}: {db_err}")
 
     except Exception as e:
-        print(f"💥 Erro fatal inesperado no ID {id_prova}: {e}")
+        print(f"💥 Erro fatal inesperado no ID {exam_id}: {e}")
 
 
 async def main():
@@ -169,7 +171,7 @@ async def main():
     limits = httpx.Limits(max_connections=CONCURRENT_DOWNLOADS + 5)
     async with httpx.AsyncClient(limits=limits) as client:
         # Passamos o db_lock para cada linha processada
-        tasks = [processar_linha(client, row, semaphore, conn, db_lock) for row in rows]
+        tasks = [process_row(client, row, semaphore, conn, db_lock) for row in rows]
 
         # Mantemos o return_exceptions=True para resiliência
         await asyncio.gather(*tasks, return_exceptions=True)

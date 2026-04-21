@@ -50,6 +50,8 @@ DIRETRIZES RIGOROSAS DE EXTRAÇÃO:
 
 1. Tratamento de Imagens e Coordenadas:
     Uma questão pode conter uma, várias ou nenhuma imagem (gráficos, tabelas, diagramas, figuras).
+    
+    O texto de enunciado da questão deve conter uma referência clara à imagem (ex: "conforme figura abaixo", "de acordo com o gráfico apresentado", "analise a tabela a seguir"). O texto de enunciado em sim NÃO é considerado uma imagem, mas sim texto. A imagem é apenas um recurso visual associado à questão.
 
     Para CADA imagem associada à questão, adicione um objeto na lista "imagens".
 
@@ -86,3 +88,16 @@ DIRETRIZES RIGOROSAS DE EXTRAÇÃO:
 6. Questões Discursivas:
 
     Agrupe textos de apoio e comandos de redação juntos no campo "enunciado" e preserve a formatação do texto utilizando formato .md.
+
+7. Validação e Consistência:
+    Certifique-se de que cada questão extraída tenha um número único e sequencial.
+  
+    Certifique-se de que cada questão extraída tenha uma matéria e um assunto identificados.
+
+    Verifique a consistência entre o enunciado da questão e o gabarito extraído para evitar contradições.
+
+    Se uma questão for anulada, marque-a como tal e não atribua um gabarito correto.
+
+    Garanta que TODAS as questões da prova sejam extraídas, mesmo que algumas não tenham imagens ou alternativas.
+
+Siga rigorosamente essas diretrizes para garantir uma extração precisa e estruturada das questões. A qualidade e a fidelidade dos dados extraídos são essenciais para o sucesso do projeto.

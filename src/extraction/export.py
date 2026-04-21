@@ -16,17 +16,33 @@ def _sanitize_fragment(value: str) -> str:
     value = re.sub(r'[<>:"/\\|?*]+', "_", value)
     value = re.sub(r"\s+", "-", value)
     value = value.strip(" .")
-    return value or "na"
+    return value
+
+
+def _normalize_optional_fragment(value: Any) -> str:
+    if value is None:
+        return ""
+    txt = str(value).strip()
+    if txt.lower() in {"", "none", "null", "na", "n/a"}:
+        return ""
+    return _sanitize_fragment(txt)
 
 
 def _build_base_name(row: Dict[str, Any]) -> str:
-    row_id = row.get("id")
-    banca = _sanitize_fragment(str(row.get("banca", "")))
-    instituicao = _sanitize_fragment(str(row.get("instituicao", "")))
-    cargo = _sanitize_fragment(str(row.get("cargo", "")))
-    especialidade = _sanitize_fragment(str(row.get("especialidade", "")))
-    ano = _sanitize_fragment(str(row.get("ano", "")))
-    return f"{row_id}-{banca}-{instituicao}-{cargo}-{especialidade}-{ano}"
+    row_id = _normalize_optional_fragment(row.get("id"))
+    banca = _normalize_optional_fragment(row.get("banca"))
+    instituicao = _normalize_optional_fragment(row.get("instituicao"))
+    cargo = _normalize_optional_fragment(row.get("cargo"))
+    especialidade = _normalize_optional_fragment(row.get("especialidade"))
+    ano = _normalize_optional_fragment(row.get("ano"))
+
+    parts = [row_id, banca, instituicao, cargo]
+    if especialidade:
+        parts.append(especialidade)
+    parts.append(ano)
+
+    parts = [p for p in parts if p]
+    return "-".join(parts)
 
 
 def _normalize_keys(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -39,12 +55,6 @@ def _normalize_keys(payload: Dict[str, Any]) -> Dict[str, Any]:
 def validate_payload_shape(
     payload: Dict[str, Any], schema_like: Dict[str, Any] | None = None
 ) -> None:
-    """
-    Validação de shape do JSON de saída.
-    Observação:
-    - `config/json_model.json` neste projeto funciona como modelo/exemplo (não JSON Schema formal).
-    - Portanto, fazemos validação estrutural mínima e segura.
-    """
     data = _normalize_keys(payload)
 
     if not isinstance(data, dict):
@@ -79,7 +89,6 @@ def validate_payload_shape(
                 f"discursivas[{i}] sem chaves obrigatórias 'numero' e/ou 'enunciado'."
             )
 
-    # `schema_like` fica disponível para futura validação mais rígida
     _ = schema_like
 
 
@@ -98,10 +107,6 @@ def _collect_strings(node: Any) -> Iterable[str]:
 
 
 def extract_referenced_images(payload: Dict[str, Any]) -> Set[str]:
-    """
-    Interpretação 1:
-    imagens referenciadas por tag [[nome_arquivo.jpeg]] no JSON.
-    """
     tag_pattern = re.compile(
         r"\[\[([^\[\]]+\.(?:jpe?g|png|webp|gif|bmp|tiff?))\]\]", re.IGNORECASE
     )
@@ -142,47 +147,44 @@ def persist_json_and_images(
     output_base_dir: str = "D:/mentor.ia/questoes",
     temp_images_dir: str | None = None,
 ) -> Tuple[str, str, List[str]]:
-    """
-    Persiste:
-    1) JSON final em D:/mentor.ia/questoes/[base-name].json
-    2) Imagens referenciadas em D:/mentor.ia/questoes/imagens/[base-name]/
-
-    Retorna:
-    - caminho absoluto do JSON
-    - caminho absoluto da pasta de imagens
-    - lista de imagens copiadas
-    """
     normalized = _normalize_keys(payload)
     validate_payload_shape(normalized, schema_like=schema_like)
 
     base_name = _build_base_name(row)
 
     json_dir = Path(output_base_dir)
-    images_dir = json_dir / "imagens" / base_name
-
     json_dir.mkdir(parents=True, exist_ok=True)
-    images_dir.mkdir(parents=True, exist_ok=True)
 
     json_path = (json_dir / f"{base_name}.json").resolve()
 
-    # Descobrir imagens referenciadas
     referenced = extract_referenced_images(normalized)
     copied_files: List[str] = []
+    images_dir_resolved = ""
 
-    if temp_images_dir:
+    if temp_images_dir and referenced:
         indexed = _index_temp_images(temp_images_dir)
+        to_copy: List[Tuple[Path, str]] = []
+
         for file_name in sorted(referenced):
             src = indexed.get(file_name)
-            if not src:
-                continue
-            dst = images_dir / file_name
-            shutil.copy2(src, dst)
-            copied_files.append(str(dst.resolve()))
+            if src:
+                to_copy.append((src, file_name))
 
-    # Persistir JSON (UTF-8)
+        # Só cria a pasta se realmente houver algo para copiar
+        if to_copy:
+            images_dir = json_dir / "imagens" / base_name
+            images_dir.mkdir(parents=True, exist_ok=True)
+
+            for src, file_name in to_copy:
+                dst = images_dir / file_name
+                shutil.copy2(src, dst)
+                copied_files.append(str(dst.resolve()))
+
+            images_dir_resolved = str(images_dir.resolve())
+
     json_path.write_text(
         json.dumps(normalized, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
-    return str(json_path), str(images_dir.resolve()), copied_files
+    return str(json_path), images_dir_resolved, copied_files

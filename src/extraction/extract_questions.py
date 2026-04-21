@@ -44,7 +44,7 @@ REQUEST_TIMES = []  # Janela móvel (últimos 60 segundos)
 # ──────────────────────────────────────────────
 
 
-def esperar_rate_limit():
+def enforce_rate_limit():
     """Aguarda para respeitar 15 req/min (máx 500 por execução)."""
     global REQUESTS_MADE, REQUEST_TIMES
 
@@ -56,14 +56,14 @@ def esperar_rate_limit():
         sys.exit(1)
 
     # Remover requisições fora da janela de 60 segundos
-    agora = time.time()
-    REQUEST_TIMES = [t for t in REQUEST_TIMES if agora - t < 60]
+    now = time.time()
+    REQUEST_TIMES = [t for t in REQUEST_TIMES if now - t < 60]
 
     # Se já há 15 requisições no último minuto, aguardar
     if len(REQUEST_TIMES) >= MAX_REQUESTS_PER_MINUTE:
-        tempo_espera = 60 - (agora - REQUEST_TIMES[0])
-        print(f"⏳ Rate limit: aguardando {tempo_espera:.1f}s...")
-        time.sleep(tempo_espera)
+        wait_time = 60 - (now - REQUEST_TIMES[0])
+        print(f"⏳ Rate limit: aguardando {wait_time:.1f}s...")
+        time.sleep(wait_time)
         REQUEST_TIMES = []
 
     REQUEST_TIMES.append(time.time())
@@ -79,12 +79,12 @@ def esperar_rate_limit():
 # ──────────────────────────────────────────────
 
 
-def convert_pdf(file_path: str, doc_type: str, concurso_id: int) -> str:
+def convert_pdf(file_path: str, doc_type: str, contest_id: int) -> str:
     """Converte cada página de um PDF em imagem PNG usando PyMuPDF."""
-    dest_dir = os.path.join(TEMP_DIR, doc_type, str(concurso_id))
+    dest_dir = os.path.join(TEMP_DIR, doc_type, str(contest_id))
     os.makedirs(dest_dir, exist_ok=True)
 
-    print(f"  📄 Convertendo {doc_type} (ID {concurso_id})")
+    print(f"  📄 Convertendo {doc_type} (ID {contest_id})")
 
     try:
         doc = fitz.open(file_path)
@@ -112,11 +112,11 @@ def convert_pdf(file_path: str, doc_type: str, concurso_id: int) -> str:
 # ──────────────────────────────────────────────
 
 
-def process_test(pasta_prova: str, pasta_gabarito: str) -> Optional[str]:
+def process_test(exam_folder: str, answer_folder: str) -> Optional[str]:
     """Envia imagens para Gemini e retorna resposta JSON."""
 
     # Aplicar rate limiter ANTES de fazer a requisição
-    esperar_rate_limit()
+    enforce_rate_limit()
 
     try:
         with open(PROMPT_PATH, "r", encoding="utf-8") as f:
@@ -126,19 +126,19 @@ def process_test(pasta_prova: str, pasta_gabarito: str) -> Optional[str]:
         return None
 
     try:
-        imgs_prova = sorted(
-            [f for f in os.listdir(pasta_prova) if f.endswith(".png")],
+        imgs_exam = sorted(
+            [f for f in os.listdir(exam_folder) if f.endswith(".png")],
             key=lambda x: int(os.path.splitext(x)[0]),
         )
-        imgs_gabarito = sorted(
-            [f for f in os.listdir(pasta_gabarito) if f.endswith(".png")],
+        imgs_answer = sorted(
+            [f for f in os.listdir(answer_folder) if f.endswith(".png")],
             key=lambda x: int(os.path.splitext(x)[0]),
         )
     except Exception as e:
         print(f"  ❌ Erro ao carregar imagens: {e}")
         return None
 
-    if not imgs_prova or not imgs_gabarito:
+    if not imgs_exam or not imgs_answer:
         print("  ❌ Imagens não encontradas")
         return None
 
@@ -146,19 +146,19 @@ def process_test(pasta_prova: str, pasta_gabarito: str) -> Optional[str]:
     contents: list = [prompt_text]
     contents.append("\n--- INÍCIO DAS IMAGENS DA PROVA ---\n")
 
-    for img_name in imgs_prova:
-        img_path = os.path.join(pasta_prova, img_name)
+    for img_name in imgs_exam:
+        img_path = os.path.join(exam_folder, img_name)
         img = Image.open(img_path)
         contents.append(img)
 
     contents.append("\n--- INÍCIO DAS IMAGENS DO GABARITO ---\n")
 
-    for img_name in imgs_gabarito:
-        img_path = os.path.join(pasta_gabarito, img_name)
+    for img_name in imgs_answer:
+        img_path = os.path.join(answer_folder, img_name)
         img = Image.open(img_path)
         contents.append(img)
 
-    print(f"  📦 Enviando para IA ({len(imgs_prova)} prov + {len(imgs_gabarito)} gab)")
+    print(f"  📦 Enviando para IA ({len(imgs_exam)} prov + {len(imgs_answer)} gab)")
 
     try:
         response = client.models.generate_content(
@@ -181,9 +181,7 @@ def process_test(pasta_prova: str, pasta_gabarito: str) -> Optional[str]:
 # ──────────────────────────────────────────────
 
 
-def realizar_recorte_automatico(
-    caminho_pagina_original: str, coordenadas_ia, nome_saida: str
-):
+def perform_auto_crop(page_image_path: str, ia_coordinates, output_name: str):
     """
     Extrai uma questão de uma página usando coordenadas normalizadas.
 
@@ -193,34 +191,34 @@ def realizar_recorte_automatico(
         nome_saida: Caminho completo para salvar a imagem recortada
     """
     try:
-        img = Image.open(caminho_pagina_original)
-        largura, altura = img.size
+        img = Image.open(page_image_path)
+        width, height = img.size
 
         # Desnormalizar (Converter 0-1000 para pixels reais)
-        ymin, xmin, ymax, xmax = coordenadas_ia
+        ymin, xmin, ymax, xmax = ia_coordinates
 
-        esquerda = (xmin * largura) / 1000
-        topo = (ymin * altura) / 1000
-        direita = (xmax * largura) / 1000
-        fundo = (ymax * altura) / 1000
+        left = (xmin * width) / 1000
+        top = (ymin * height) / 1000
+        right = (xmax * width) / 1000
+        bottom = (ymax * height) / 1000
 
         # Fazer o crop
-        area_recorte = (esquerda, topo, direita, fundo)
-        imagem_recortada = img.crop(area_recorte)
+        crop_area = (left, top, right, bottom)
+        cropped_image = img.crop(crop_area)
 
         # Garantir diretório
-        os.makedirs(os.path.dirname(nome_saida), exist_ok=True)
+        os.makedirs(os.path.dirname(output_name), exist_ok=True)
 
         # Salvar
-        imagem_recortada.save(nome_saida)
-        print(f"    📸 Imagem salva: {os.path.basename(nome_saida)}")
+        cropped_image.save(output_name)
+        print(f"    📸 Imagem salva: {os.path.basename(output_name)}")
 
     except Exception as e:
         print(f"    ❌ Erro ao recortar: {e}")
 
 
-def extrair_imagens_questoes(
-    resultado_json: str, pasta_prova: str, pasta_gabarito: str, concurso_id: int
+def extract_question_images(
+    result_json: str, exam_folder: str, answer_folder: str, contest_id: int
 ):
     """
     Extrai imagens das questões usando as coordenadas retornadas pela IA.
@@ -232,50 +230,50 @@ def extrair_imagens_questoes(
         concurso_id: ID do concurso (para criar pasta de imagens)
     """
     try:
-        dados = json.loads(resultado_json)
+        data = json.loads(result_json)
     except Exception as e:
         print(f"  ❌ Erro ao parsear JSON para extração de imagens: {e}")
         return
 
-    questoes = dados.get("questoes", [])
-    if not questoes:
+    questions = data.get("questoes", [])
+    if not questions:
         print("  ⚠️  Nenhuma questão encontrada no JSON")
         return
 
-    print(f"  🖼️  Extraindo imagens de {len(questoes)} questões...")
+    print(f"  🖼️  Extraindo imagens de {len(questions)} questões...")
 
-    for questao in questoes:
-        numero = questao.get("numero")
-        imagens = questao.get("imagens", [])
+    for question in questions:
+        number = question.get("numero")
+        images = question.get("imagens", [])
 
-        if not imagens:
+        if not images:
             continue
 
-        for idx, img_info in enumerate(imagens):
-            index_pagina = img_info.get("index_da_pagina")
-            coordenadas = img_info.get("coordenadas")
+        for idx, img_info in enumerate(images):
+            page_index = img_info.get("index_da_pagina")
+            coordinates = img_info.get("coordenadas")
 
-            if index_pagina is None or not coordenadas:
+            if page_index is None or not coordinates:
                 continue
 
             # Caminho da página original
-            pagina_original = os.path.join(pasta_prova, f"{index_pagina}.png")
+            original_page = os.path.join(exam_folder, f"{page_index}.png")
 
-            if not os.path.exists(pagina_original):
-                print(f"    ⚠️  Página {index_pagina} não encontrada")
+            if not os.path.exists(original_page):
+                print(f"    ⚠️  Página {page_index} não encontrada")
                 continue
 
             # Caminho de saída
-            pasta_questoes_imagens = os.path.join(IMAGES_DIR, f"{concurso_id}")
+            question_images_folder = os.path.join(IMAGES_DIR, f"{contest_id}")
             if idx > 0:
-                nome_arquivo = f"{numero}_{idx}.png"
+                file_name = f"{number}_{idx}.png"
             else:
-                nome_arquivo = f"{numero}.png"
+                file_name = f"{number}.png"
 
-            caminho_saida = os.path.join(pasta_questoes_imagens, nome_arquivo)
+            output_path = os.path.join(question_images_folder, file_name)
 
             # Extrair imagem
-            realizar_recorte_automatico(pagina_original, coordenadas, caminho_saida)
+            perform_auto_crop(original_page, coordinates, output_path)
 
 
 # ──────────────────────────────────────────────
@@ -290,159 +288,157 @@ def _sanitize(value: Optional[str]) -> str:
     return value.strip().replace("/", "-").replace("\\", "-").replace(":", "-")
 
 
-def _cleanup_temp(concurso_id: int):
+def cleanup_temp(contest_id: int):
     """Remove pastas temporárias."""
     for doc_type in ("prova", "gabarito"):
-        path = os.path.join(TEMP_DIR, doc_type, str(concurso_id))
+        path = os.path.join(TEMP_DIR, doc_type, str(contest_id))
         if os.path.exists(path):
             shutil.rmtree(path)
 
 
 # ──────────────────────────────────────────────
-# Fase 1: Converter PDFs (paralelo, sem limite)
+# Phase 1: Convert PDFs (parallel, no limit)
 # ──────────────────────────────────────────────
 
 
-async def converter_batch(batch, loop):
+async def convert_batch(batch, loop):
     """Converte prova + gabarito de um lote em paralelo (sem limite)."""
     print("[FASE 1] Convertendo PDFs em paralelo...")
 
     tasks = []
 
     for row in batch:
-        concurso_id = row["id"]
-        prova_path = row["prova_path"]
-        gabarito_path = row["gabarito_path"]
+        contest_id = row["id"]
+        exam_path = row["prova_path"]
+        answer_path = row["gabarito_path"]
 
         # Criar tarefas para converter prova e gabarito em paralelo
-        task_prova = loop.run_in_executor(
-            None, convert_pdf, prova_path, "prova", concurso_id
+        task_exam = loop.run_in_executor(
+            None, convert_pdf, exam_path, "prova", contest_id
         )
-        task_gabarito = loop.run_in_executor(
-            None, convert_pdf, gabarito_path, "gabarito", concurso_id
+        task_answer = loop.run_in_executor(
+            None, convert_pdf, answer_path, "gabarito", contest_id
         )
 
-        tasks.append((concurso_id, task_prova, task_gabarito))
+        tasks.append((contest_id, task_exam, task_answer))
 
     # Aguardar todas as conversões
-    resultados = {}
-    for concurso_id, task_prova, task_gabarito in tasks:
+    results = {}
+    for contest_id, task_exam, task_answer in tasks:
         try:
-            pasta_prova = await task_prova
-            pasta_gabarito = await task_gabarito
-            resultados[concurso_id] = {
+            exam_folder = await task_exam
+            answer_folder = await task_answer
+            results[contest_id] = {
                 "sucesso": True,
-                "pasta_prova": pasta_prova,
-                "pasta_gabarito": pasta_gabarito,
+                "pasta_prova": exam_folder,
+                "pasta_gabarito": answer_folder,
             }
         except Exception as e:
-            print(f"  ❌ Erro na conversão ID {concurso_id}: {e}")
-            resultados[concurso_id] = {"sucesso": False}
+            print(f"  ❌ Erro na conversão ID {contest_id}: {e}")
+            results[contest_id] = {"sucesso": False}
 
     print(
-        f"✅ Fase 1 concluída: {len([r for r in resultados.values() if r['sucesso']])} conversões OK\n"
+        f"✅ Fase 1 concluída: {len([r for r in results.values() if r['sucesso']])} conversões OK\n"
     )
-    return resultados
+    return results
 
 
 # ──────────────────────────────────────────────
-# Fase 2: Processar com IA (paralelo, máx 10)
+# Phase 2: Process with AI (parallel, max 10)
 # ──────────────────────────────────────────────
 
 
-async def processar_concurso_ia(
+async def process_contest_ai(
     row,
-    pasta_prova,
-    pasta_gabarito,
+    exam_folder,
+    answer_folder,
     semaphore,
     conn,
     output_dir,
     loop,
 ):
     """Processa um concurso com IA (dentro do semáforo de máx 10)."""
-    concurso_id = row["id"]
-    banca = _sanitize(row["banca"])
-    instituicao = _sanitize(row["instituicao"])
-    cargo = _sanitize(row["cargo"])
-    especialidade = _sanitize(row["especialidade"])
-    ano = row["ano"] if row["ano"] else "sem_ano"
+    contest_id = row["id"]
+    board = _sanitize(row["banca"])
+    institution = _sanitize(row["instituicao"])
+    position = _sanitize(row["cargo"])
+    specialty = _sanitize(row["especialidade"])
+    year = row["ano"] if row["ano"] else "sem_ano"
 
     async with semaphore:
-        print(f"🤖 IA processando ID {concurso_id}")
+        print(f"🤖 IA processando ID {contest_id}")
 
         # Executar process_test em thread
-        resultado_json = await loop.run_in_executor(
-            None, process_test, pasta_prova, pasta_gabarito
+        result_json = await loop.run_in_executor(
+            None, process_test, exam_folder, answer_folder
         )
 
-        if resultado_json is None:
-            print(f"  ⚠️  Extração falhou para ID {concurso_id}")
-            return (concurso_id, False)
+        if result_json is None:
+            print(f"  ⚠️  Extração falhou para ID {contest_id}")
+            return (contest_id, False)
 
         # Salvar JSON
-        nome_arquivo = (
-            f"{concurso_id}-{banca}-{instituicao}-{cargo}-{especialidade}-{ano}.json"
+        file_name = (
+            f"{contest_id}-{board}-{institution}-{position}-{specialty}-{year}.json"
         )
-        caminho_json = os.path.join(output_dir, nome_arquivo)
+        json_path = os.path.join(output_dir, file_name)
 
-        with open(caminho_json, "w", encoding="utf-8") as f:
+        with open(json_path, "w", encoding="utf-8") as f:
             try:
-                dados = json.loads(resultado_json)
-                json.dump(dados, f, ensure_ascii=False, indent=4)
+                data = json.loads(result_json)
+                json.dump(data, f, ensure_ascii=False, indent=4)
             except json.JSONDecodeError:
-                f.write(resultado_json)
+                f.write(result_json)
 
-        print(f"  💾 JSON salvo: {os.path.basename(caminho_json)}")
+        print(f"  💾 JSON salvo: {os.path.basename(json_path)}")
 
         # Extrair imagens das questões
         print("  🖼️  Extraindo imagens...")
-        extrair_imagens_questoes(
-            resultado_json, pasta_prova, pasta_gabarito, concurso_id
-        )
+        extract_question_images(result_json, exam_folder, answer_folder, contest_id)
 
         # Atualizar banco
         cursor = conn.cursor()
         cursor.execute(
             "UPDATE concursos SET questoes_path = ?, status_extracao = 'concluido' WHERE id = ?",
-            (caminho_json, concurso_id),
+            (json_path, contest_id),
         )
         conn.commit()
-        print(f"  ✅ ID {concurso_id} finalizado\n")
+        print(f"  ✅ ID {contest_id} finalizado\n")
 
-        return (concurso_id, True)
+        return (contest_id, True)
 
 
-async def processar_batch_ia(batch, conversoes, semaphore, conn, output_dir, loop):
+async def process_batch_ai(batch, conversions, semaphore, conn, output_dir, loop):
     """Processa um lote com IA (máx 10 simultâneas)."""
     print("[FASE 2] Processando com IA (máx 10 simultâneas)...")
 
     tasks = []
 
     for row in batch:
-        concurso_id = row["id"]
+        contest_id = row["id"]
 
         # Se conversão falhou, pular
-        if not conversoes.get(concurso_id, {}).get("sucesso", False):
-            print(f"⏭️  ID {concurso_id} pulado (conversão falhou)")
+        if not conversions.get(contest_id, {}).get("sucesso", False):
+            print(f"⏭️  ID {contest_id} pulado (conversão falhou)")
             continue
 
-        pasta_prova = conversoes[concurso_id]["pasta_prova"]
-        pasta_gabarito = conversoes[concurso_id]["pasta_gabarito"]
+        exam_folder = conversions[contest_id]["pasta_prova"]
+        answer_folder = conversions[contest_id]["pasta_gabarito"]
 
         # Criar tarefa
-        task = processar_concurso_ia(
-            row, pasta_prova, pasta_gabarito, semaphore, conn, output_dir, loop
+        task = process_contest_ai(
+            row, exam_folder, answer_folder, semaphore, conn, output_dir, loop
         )
         tasks.append(task)
 
     # Executar todas as tarefas IA em paralelo
     if tasks:
-        resultados = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks)
     else:
-        resultados = []
+        results = []
 
     print("✅ Fase 2 concluída\n")
-    return resultados
+    return results
 
 
 # ──────────────────────────────────────────────
@@ -473,14 +469,14 @@ async def main():
     cursor.execute(
         "SELECT * FROM concursos WHERE status_extracao = 'pendente' AND prova_path IS NOT NULL AND gabarito_path IS NOT NULL"
     )
-    pendentes = cursor.fetchall()
+    pending = cursor.fetchall()
 
-    if not pendentes:
+    if not pending:
         print("ℹ️  Nenhum concurso pendente para extração.")
         conn.close()
         return
 
-    print(f"📊 Total de concursos pendentes: {len(pendentes)}")
+    print(f"📊 Total de concursos pendentes: {len(pending)}")
     print(f"⚙️  Processando em lotes de {BATCH_SIZE}\n")
 
     # Garantir que os diretórios de saída existem
@@ -492,46 +488,46 @@ async def main():
     loop = asyncio.get_event_loop()
 
     # Dividir em lotes e processar
-    total_concluidos = 0
-    total_falhados = 0
+    total_completed = 0
+    total_failed = 0
 
-    for lote_num in range(0, len(pendentes), BATCH_SIZE):
+    for batch_num in range(0, len(pending), BATCH_SIZE):
         # Verificar se atingiu limite de requisições
         if REQUESTS_MADE >= MAX_REQUESTS_PER_EXECUTION:
             print(f"\n❌ Limite de {MAX_REQUESTS_PER_EXECUTION} requisições atingido.")
-            print(f"✅ Concluídos até agora: {total_concluidos}")
+            print(f"✅ Concluídos até agora: {total_completed}")
             break
 
-        batch = pendentes[lote_num : lote_num + BATCH_SIZE]
-        num_lote = (lote_num // BATCH_SIZE) + 1
-        total_lotes = (len(pendentes) + BATCH_SIZE - 1) // BATCH_SIZE
+        batch = pending[batch_num : batch_num + BATCH_SIZE]
+        num_batch = (batch_num // BATCH_SIZE) + 1
+        total_batches = (len(pending) + BATCH_SIZE - 1) // BATCH_SIZE
 
         print(f"\n{'=' * 70}")
-        print(f"📦 LOTE {num_lote}/{total_lotes} ({len(batch)} concursos)")
+        print(f"📦 LOTE {num_batch}/{total_batches} ({len(batch)} concursos)")
         print(f"{'=' * 70}\n")
 
         # Fase 1: Converter
-        conversoes = await converter_batch(batch, loop)
+        conversions = await convert_batch(batch, loop)
 
         # Fase 2: Processar com IA
-        resultados_ia = await processar_batch_ia(
-            batch, conversoes, semaphore, conn, OUTPUT_DIR, loop
+        ai_results = await process_batch_ai(
+            batch, conversions, semaphore, conn, OUTPUT_DIR, loop
         )
 
         # Contar resultados
-        concluidos_lote = sum(1 for _, sucesso in resultados_ia if sucesso)
-        falhados_lote = len(resultados_ia) - concluidos_lote
+        completed_in_batch = sum(1 for _, success in ai_results if success)
+        failed_in_batch = len(ai_results) - completed_in_batch
 
-        total_concluidos += concluidos_lote
-        total_falhados += falhados_lote
+        total_completed += completed_in_batch
+        total_failed += failed_in_batch
 
         # Fase 3: Limpar
         print("[FASE 3] Limpando arquivos temporários...")
         for row in batch:
-            _cleanup_temp(row["id"])
+            cleanup_temp(row["id"])
 
         print(
-            f"✅ Lote {num_lote} finalizado: {concluidos_lote} OK, {falhados_lote} falhados\n"
+            f"✅ Lote {num_batch} finalizado: {completed_in_batch} OK, {failed_in_batch} falhados\n"
         )
 
     conn.close()
@@ -539,8 +535,8 @@ async def main():
     # Resumo final
     print("\n" + "=" * 70)
     print("🏁 Extração COMPLETA finalizada.")
-    print(f"✅ Total concluídos: {total_concluidos}/{len(pendentes)}")
-    print(f"❌ Total falhados: {total_falhados}/{len(pendentes)}")
+    print(f"✅ Total concluídos: {total_completed}/{len(pending)}")
+    print(f"❌ Total falhados: {total_failed}/{len(pending)}")
     print(f"📊 Requisições realizadas: {REQUESTS_MADE}/{MAX_REQUESTS_PER_EXECUTION}")
     print("=" * 70)
 

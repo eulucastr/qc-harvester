@@ -89,7 +89,7 @@ Sua tarefa é **associar logicamente** os IDs das imagens detectadas aos blocos 
 
 3. Textos, Formatação e LaTeX:
 
-    Utilize formatação Markdown para preservar marcações do texto original (como negrito e itálico) no "enunciado", "texto_referencia" e "alternativas".
+    Utilize formatação Markdown para preservar marcações do texto original, como negrito, itálico, tabelas, undeline e outros) no "enunciado", "texto_referencia" e "alternativas".
 
     Toda e qualquer fórmula matemática ou equação deve ser convertida para o formato LaTeX.
 

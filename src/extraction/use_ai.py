@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from google import genai
 
 # Modelo solicitado pelo usuário
-GEMINI_MODEL = "gemini-3-flash-lite-preview"
+GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
 
 
 @dataclass

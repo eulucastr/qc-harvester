@@ -1,7 +1,7 @@
 import json
 import time
 
-from .exporters import export_data_to_csv, log_success
+from .export import export_data_to_csv, log_success
 from .scraper import close_scraper, scrape_tests
 
 # Carrega configuração

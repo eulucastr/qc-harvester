@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -165,8 +166,186 @@ def _build_batch_state(
     return state
 
 
+async def _process_row_pipeline(
+    row: Dict[str, Any],
+    row_state: Dict[str, Any],
+    schema_like: Dict[str, Any],
+    db_path: str,
+    rate_limiter: SlidingWindowRateLimiter,
+    success_logger: logging.Logger,
+    error_logger: logging.Logger,
+) -> None:
+    row_id = row.get("id")
+    if row_id is None:
+        return
+
+    # ETAPA 1 -> ETAPA 2 -> ETAPA 3 -> ETAPA 4 (encadeadas por item)
+    try:
+        print(f"[PIPE][id={row_id}] ETAPA 1: validando caminhos.")
+        prova_path = ensure_local_absolute(str(row.get("prova_path", "")), "prova_path")
+        gabarito_path = ensure_local_absolute(
+            str(row.get("gabarito_path", "")), "gabarito_path"
+        )
+        row_state["prova_path"] = prova_path
+        row_state["gabarito_path"] = gabarito_path
+
+        print(f"[PIPE][id={row_id}] ETAPA 1: extraindo imagens.")
+        manifest = await asyncio.to_thread(
+            extract_images_from_prova,
+            prova_pdf_path=prova_path,
+            row_id=row_id,
+            banca=str(row.get("banca", "")),
+            instituicao=str(row.get("instituicao", "")),
+            base_temp_dir=TEMP_BASE_DIR,
+            logger=success_logger,
+        )
+        manifest_dict = manifest_to_dict(manifest)
+        image_paths = [
+            item["absolute_path"]
+            for item in manifest_dict.get("images", [])
+            if item.get("absolute_path")
+        ]
+
+        row_state["manifest"] = manifest
+        row_state["manifest_dict"] = manifest_dict
+        row_state["image_paths"] = image_paths
+        row_state["temp_dir"] = manifest.output_dir
+
+        print(
+            f"[PIPE][id={row_id}] ETAPA 1 OK. Imagens: {manifest.total_images} | Temp: {manifest.output_dir}"
+        )
+
+    except Exception as exc:
+        row_state["status"] = "pendente"
+        row_state["reason"] = f"Falha na extração de imagens: {exc}"
+        print(f"[PIPE][id={row_id}] ETAPA 1 ERRO: {exc}")
+        error_logger.error(
+            "Falha na etapa de extração de imagens id=%s: %s\n%s",
+            row_id,
+            exc,
+            traceback.format_exc(),
+        )
+        cleanup_temp_dir(row_state.get("temp_dir"), error_logger, row_id=row_id)
+        return
+
+    try:
+        print(
+            f"[PIPE][id={row_id}] ETAPA 2: chamando IA com {len(row_state['image_paths'])} imagens."
+        )
+        ai_result = await asyncio.to_thread(
+            call_ai_with_retries,
+            prova_pdf_path=row_state["prova_path"],
+            gabarito_pdf_path=row_state["gabarito_path"],
+            extracted_image_paths=row_state["image_paths"],
+            prompt_path=PROMPT_PATH,
+            schema_path=JSON_MODEL_PATH,
+            network_retries=3,
+            invalid_json_extra_retry=1,
+            backoff_base_seconds=2.0,
+            rate_limiter=rate_limiter,
+            logger=success_logger,
+        )
+        row_state["ai_result"] = ai_result
+
+        print(
+            f"[PIPE][id={row_id}] ETAPA 2 retorno: success={ai_result.success} attempts={ai_result.attempts}"
+        )
+
+        if not ai_result.success or not ai_result.content:
+            row_state["status"] = "pendente"
+            row_state["reason"] = ai_result.error or "IA sem sucesso"
+            print(
+                f"[PIPE][id={row_id}] ETAPA 2 inválida. Permanece pendente. Motivo: {row_state['reason']}"
+            )
+            success_logger.info(
+                "Registro id=%s mantido como pendente. Motivo IA: %s",
+                row_id,
+                row_state["reason"],
+            )
+            cleanup_temp_dir(row_state.get("temp_dir"), error_logger, row_id=row_id)
+            return
+
+    except Exception as exc:
+        row_state["status"] = "pendente"
+        row_state["reason"] = f"Falha na IA: {exc}"
+        print(f"[PIPE][id={row_id}] ETAPA 2 ERRO: {exc}")
+        error_logger.error(
+            "Falha na etapa de IA id=%s: %s\n%s",
+            row_id,
+            exc,
+            traceback.format_exc(),
+        )
+        cleanup_temp_dir(row_state.get("temp_dir"), error_logger, row_id=row_id)
+        return
+
+    try:
+        print(f"[PIPE][id={row_id}] ETAPA 3: exportando JSON/imagens.")
+        ai_payload = row_state["ai_result"].content
+        if ai_payload is None:
+            row_state["status"] = "pendente"
+            row_state["reason"] = "IA sem payload para exportação"
+            print(
+                f"[PIPE][id={row_id}] ETAPA 3 inválida. Motivo: {row_state['reason']}"
+            )
+            cleanup_temp_dir(row_state.get("temp_dir"), error_logger, row_id=row_id)
+            return
+
+        json_abs_path, images_abs_dir, copied_files = await asyncio.to_thread(
+            persist_json_and_images,
+            row=row_state["row"],
+            payload=ai_payload,
+            schema_like=schema_like,
+            output_base_dir=OUTPUT_BASE_DIR,
+            temp_images_dir=row_state["temp_dir"],
+        )
+
+        await asyncio.to_thread(
+            update_row_to_extracted,
+            row_id,
+            str(Path(json_abs_path).resolve()),
+            db_path,
+        )
+
+        row_state["json_abs_path"] = json_abs_path
+        row_state["images_abs_dir"] = images_abs_dir
+        row_state["copied_files"] = copied_files
+        row_state["status"] = "extraido"
+        row_state["reason"] = None
+
+        manifest_total = (
+            row_state["manifest"].total_images if row_state["manifest"] else 0
+        )
+        success_logger.info(
+            "Extração concluída id=%s | json=%s | imagens_copiadas=%s | temp_imagens=%s",
+            row_id,
+            json_abs_path,
+            len(copied_files),
+            manifest_total,
+        )
+
+        print(
+            f"[PIPE][id={row_id}] ETAPA 3 OK. JSON: {json_abs_path} | Imagens copiadas: {len(copied_files)}"
+        )
+
+    except Exception as exc:
+        row_state["status"] = "pendente"
+        row_state["reason"] = f"Falha na exportação: {exc}"
+        print(f"[PIPE][id={row_id}] ETAPA 3 ERRO: {exc}")
+        error_logger.error(
+            "Falha na etapa de exportação id=%s: %s\n%s",
+            row_id,
+            exc,
+            traceback.format_exc(),
+        )
+    finally:
+        print(f"[PIPE][id={row_id}] ETAPA 4: limpando temporário.")
+        cleanup_temp_dir(row_state.get("temp_dir"), error_logger, row_id=row_id)
+
+
 def run_extraction_pipeline(db_path: str = DB_PATH) -> Dict[str, Any]:
-    print("[PIPELINE] Inicializando pipeline de extração em lotes por etapa.")
+    print(
+        "[PIPELINE] Inicializando pipeline de extração em lotes concorrentes por item."
+    )
     success_logger, error_logger = setup_loggers()
     print("[PIPELINE] Loggers configurados com sucesso.")
 
@@ -203,206 +382,36 @@ def run_extraction_pipeline(db_path: str = DB_PATH) -> Dict[str, Any]:
 
     for batch_idx, batch_rows in enumerate(batches, start=1):
         print(f"\n[PIPELINE] ===== Início do ciclo {batch_idx}/{len(batches)} =====")
-        print(f"[PIPELINE] Registros no ciclo: {len(batch_rows)}")
+        print(
+            f"[PIPELINE] Registros no ciclo: {len(batch_rows)} (concorrentes, fluxo encadeado por item)"
+        )
 
         state = _build_batch_state(batch_rows)
 
-        # ETAPA 1: EXTRAIR IMAGENS DE TODAS AS PROVAS DO LOTE
-        print(
-            f"[ETAPA 1][CICLO {batch_idx}] Extraindo imagens de {len(batch_rows)} provas..."
-        )
-        for row in batch_rows:
-            row_id = row.get("id")
-            if row_id is None:
-                continue
-
-            print(f"[ETAPA 1][id={row_id}] Iniciando validação de caminhos.")
-            try:
-                prova_path = ensure_local_absolute(
-                    str(row.get("prova_path", "")), "prova_path"
-                )
-                gabarito_path = ensure_local_absolute(
-                    str(row.get("gabarito_path", "")), "gabarito_path"
-                )
-
-                state[row_id]["prova_path"] = prova_path
-                state[row_id]["gabarito_path"] = gabarito_path
-
-                print(f"[ETAPA 1][id={row_id}] Extraindo imagens da prova.")
-                manifest = extract_images_from_prova(
-                    prova_pdf_path=prova_path,
-                    row_id=row_id,
-                    banca=str(row.get("banca", "")),
-                    instituicao=str(row.get("instituicao", "")),
-                    base_temp_dir=TEMP_BASE_DIR,
-                    logger=success_logger,
-                )
-                manifest_dict = manifest_to_dict(manifest)
-                image_paths = [
-                    item["absolute_path"]
-                    for item in manifest_dict.get("images", [])
-                    if item.get("absolute_path")
-                ]
-
-                state[row_id]["manifest"] = manifest
-                state[row_id]["manifest_dict"] = manifest_dict
-                state[row_id]["image_paths"] = image_paths
-                state[row_id]["temp_dir"] = manifest.output_dir
-
-                print(
-                    f"[ETAPA 1][id={row_id}] OK. Imagens extraídas: {manifest.total_images} | "
-                    f"Temp: {manifest.output_dir}"
-                )
-            except Exception as exc:
-                state[row_id]["status"] = "pendente"
-                state[row_id]["reason"] = f"Falha na extração de imagens: {exc}"
-                print(f"[ETAPA 1][id={row_id}] ERRO: {exc}")
-                error_logger.error(
-                    "Falha na etapa de extração de imagens id=%s: %s\n%s",
-                    row_id,
-                    exc,
-                    traceback.format_exc(),
-                )
-
-        # ETAPA 2: PROCESSAR IA PARA TODAS AS PROVAS VÁLIDAS DO LOTE
-        print(f"[ETAPA 2][CICLO {batch_idx}] Processando IA para os registros aptos...")
-        for row in batch_rows:
-            row_id = row.get("id")
-            if row_id is None:
-                continue
-
-            row_state = state[row_id]
-            if row_state["prova_path"] is None or row_state["gabarito_path"] is None:
-                print(f"[ETAPA 2][id={row_id}] Pulado (falha anterior).")
-                continue
-
-            print(
-                f"[ETAPA 2][id={row_id}] Chamando IA com {len(row_state['image_paths'])} imagens."
-            )
-            try:
-                ai_result = call_ai_with_retries(
-                    prova_pdf_path=row_state["prova_path"],
-                    gabarito_pdf_path=row_state["gabarito_path"],
-                    extracted_image_paths=row_state["image_paths"],
-                    prompt_path=PROMPT_PATH,
-                    schema_path=JSON_MODEL_PATH,
-                    network_retries=3,
-                    invalid_json_extra_retry=1,
-                    backoff_base_seconds=2.0,
-                    rate_limiter=rate_limiter,
-                    logger=success_logger,
-                )
-                row_state["ai_result"] = ai_result
-
-                print(
-                    f"[ETAPA 2][id={row_id}] Retorno IA: success={ai_result.success} "
-                    f"attempts={ai_result.attempts}"
-                )
-
-                if not ai_result.success or not ai_result.content:
-                    row_state["status"] = "pendente"
-                    row_state["reason"] = ai_result.error or "IA sem sucesso"
-                    print(
-                        f"[ETAPA 2][id={row_id}] Conteúdo inválido/ausente. "
-                        f"Permanece pendente. Motivo: {row_state['reason']}"
+        async def _run_batch() -> None:
+            tasks = []
+            for row in batch_rows:
+                row_id = row.get("id")
+                if row_id is None:
+                    continue
+                tasks.append(
+                    asyncio.create_task(
+                        _process_row_pipeline(
+                            row=row,
+                            row_state=state[row_id],
+                            schema_like=schema_like,
+                            db_path=db_path,
+                            rate_limiter=rate_limiter,
+                            success_logger=success_logger,
+                            error_logger=error_logger,
+                        )
                     )
-                    success_logger.info(
-                        "Registro id=%s mantido como pendente. Motivo IA: %s",
-                        row_id,
-                        row_state["reason"],
-                    )
-            except Exception as exc:
-                row_state["status"] = "pendente"
-                row_state["reason"] = f"Falha na IA: {exc}"
-                print(f"[ETAPA 2][id={row_id}] ERRO: {exc}")
-                error_logger.error(
-                    "Falha na etapa de IA id=%s: %s\n%s",
-                    row_id,
-                    exc,
-                    traceback.format_exc(),
                 )
+            if tasks:
+                await asyncio.gather(*tasks)
 
-        # ETAPA 3: EXPORTAR QUESTÕES DAS PROVAS VÁLIDAS DO LOTE
-        print(
-            f"[ETAPA 3][CICLO {batch_idx}] Exportando JSON/imagens dos registros aptos..."
-        )
-        for row in batch_rows:
-            row_id = row.get("id")
-            if row_id is None:
-                continue
+        asyncio.run(_run_batch())
 
-            row_state = state[row_id]
-            ai_result = row_state["ai_result"]
-
-            if not ai_result or not ai_result.success or not ai_result.content:
-                print(f"[ETAPA 3][id={row_id}] Pulado (falha anterior).")
-                continue
-
-            try:
-                print(
-                    f"[ETAPA 3][id={row_id}] Persistindo JSON e imagens referenciadas."
-                )
-                json_abs_path, images_abs_dir, copied_files = persist_json_and_images(
-                    row=row_state["row"],
-                    payload=ai_result.content,
-                    schema_like=schema_like,
-                    output_base_dir=OUTPUT_BASE_DIR,
-                    temp_images_dir=row_state["temp_dir"],
-                )
-
-                update_row_to_extracted(
-                    row_id=row_id,
-                    questoes_path=str(Path(json_abs_path).resolve()),
-                    db_path=db_path,
-                )
-
-                row_state["json_abs_path"] = json_abs_path
-                row_state["images_abs_dir"] = images_abs_dir
-                row_state["copied_files"] = copied_files
-                row_state["status"] = "extraido"
-                row_state["reason"] = None
-
-                manifest_total = (
-                    row_state["manifest"].total_images if row_state["manifest"] else 0
-                )
-                success_logger.info(
-                    "Extração concluída id=%s | json=%s | imagens_copiadas=%s | temp_imagens=%s",
-                    row_id,
-                    json_abs_path,
-                    len(copied_files),
-                    manifest_total,
-                )
-
-                print(
-                    f"[ETAPA 3][id={row_id}] OK. JSON: {json_abs_path} | "
-                    f"Imagens copiadas: {len(copied_files)}"
-                )
-
-            except Exception as exc:
-                row_state["status"] = "pendente"
-                row_state["reason"] = f"Falha na exportação: {exc}"
-                print(f"[ETAPA 3][id={row_id}] ERRO: {exc}")
-                error_logger.error(
-                    "Falha na etapa de exportação id=%s: %s\n%s",
-                    row_id,
-                    exc,
-                    traceback.format_exc(),
-                )
-
-        # ETAPA 4: LIMPAR TEMP DE TODAS AS PROVAS DO LOTE
-        print(f"[ETAPA 4][CICLO {batch_idx}] Limpando temporários do lote...")
-        for row in batch_rows:
-            row_id = row.get("id")
-            if row_id is None:
-                continue
-            row_state = state[row_id]
-            cleanup_temp_dir(
-                temp_dir=row_state["temp_dir"],
-                error_logger=error_logger,
-                row_id=row_id,
-            )
-
-        # Consolidação de resultados do lote
         print(f"[PIPELINE] Consolidando resultados do ciclo {batch_idx}...")
         for row in batch_rows:
             row_id = row.get("id")
@@ -433,8 +442,7 @@ def run_extraction_pipeline(db_path: str = DB_PATH) -> Dict[str, Any]:
                     }
                 )
                 print(
-                    f"[PIPELINE][id={row_id}] Final do ciclo: PENDENTE | "
-                    f"Motivo: {row_state['reason']}"
+                    f"[PIPELINE][id={row_id}] Final do ciclo: PENDENTE | Motivo: {row_state['reason']}"
                 )
 
         print(f"[PIPELINE] ===== Fim do ciclo {batch_idx}/{len(batches)} =====")

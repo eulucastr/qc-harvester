@@ -1,15 +1,10 @@
 {
-  "questões": [
+  "questoes": [
     {
       "numero": 1,
-      "texto": "Texto ao qual a questão faz referência",
-      "enunciado": "Texto da questão",
-      "imagens": [
-        {
-          "index_da_pagina": 3, 
-          "coordenadas": [150, 20, 450, 980]
-        }
-      ],
+      "texto_referencia": "Texto ao qual a questão faz referência (ou null se não houver)",
+      "enunciado": "Texto completo da questão",
+      "imagens": [3, 7, 10],
       "alternativas": {
         "a": "Texto da alternativa A",
         "b": "Texto da alternativa B",
@@ -18,15 +13,16 @@
         "e": "Texto da alternativa E"
       },
       "certo_ou_errado": false,
-      "matéria": "Matéria da questão",
-      "assunto": "Assunto da questão",
-      "gabarito": "Letra da alternativa correta ou 'certo' ou 'errado'"
+      "materia": "Matéria da questão",
+      "assunto": "Assunto específico da questão",
+      "gabarito": "A",
+      "anulada": false
     }
   ],
   "discursivas": [
     {
       "numero": 1,
-      "enunciado": "Texto da questão",
+      "enunciado": "Texto completo da questão discursiva, incluindo textos de apoio",
       "linhas": {
         "minimo": 20,
         "maximo": 30
@@ -34,4 +30,3 @@
     }
   ]
 }
-

@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 from google import genai
 
-# Modelo solicitado pelo usuário
+# Modelo solicitado
 GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
 
 
@@ -80,7 +80,6 @@ class SlidingWindowRateLimiter:
                     self._day_events.append(now_ts)
                     return
 
-                # calcular quanto falta para liberar 1 slot na janela de 60s
                 oldest_in_minute = (
                     min(self._minute_events) if self._minute_events else now_ts
                 )
@@ -93,7 +92,7 @@ class SlidingWindowRateLimiter:
             time.sleep(min(wait_for, 1.0))
 
 
-def load_prompt(prompt_path: str = "config/prompt.md") -> str:
+def load_prompt(prompt_path: str) -> str:
     path = Path(prompt_path)
     if not path.exists():
         raise FileNotFoundError(f"Prompt não encontrado: {prompt_path}")
@@ -108,56 +107,100 @@ def load_json_schema(schema_path: str = "config/json_model.json") -> Dict[str, A
 
 
 def _extract_json_from_text(text: str) -> str:
-    """
-    Tenta extrair JSON de uma resposta possivelmente envelopada com markdown.
-    """
     stripped = text.strip()
 
-    # remove code fences comuns
     if stripped.startswith("```"):
         stripped = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", stripped)
         stripped = re.sub(r"\n?```$", "", stripped)
 
-    # tenta detectar primeiro objeto JSON
     first = stripped.find("{")
     last = stripped.rfind("}")
     if first != -1 and last != -1 and last > first:
-        candidate = stripped[first : last + 1]
-        return candidate.strip()
+        return stripped[first : last + 1].strip()
 
     return stripped
 
 
-def _basic_shape_validation(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
-    """
-    Validação mínima compatível com o arquivo de modelo atual (exemplo, não JSON Schema formal):
-    - precisa ter chaves: 'questões'/'questoes' e 'discursivas'
-    """
+def _normalize_keys(payload: Dict[str, Any]) -> Dict[str, Any]:
+    data = dict(payload)
+    if "questões" in data and "questoes" not in data:
+        data["questoes"] = data.pop("questões")
+    return data
+
+
+def _validate_prova_payload(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     keys = set(payload.keys())
     has_questoes = ("questoes" in keys) or ("questões" in keys)
     has_discursivas = "discursivas" in keys
 
     if not has_questoes:
-        return False, "JSON inválido: chave 'questoes' (ou 'questões') ausente."
+        return False, "JSON inválido (prova): chave 'questoes' (ou 'questões') ausente."
     if not has_discursivas:
-        return False, "JSON inválido: chave 'discursivas' ausente."
+        return False, "JSON inválido (prova): chave 'discursivas' ausente."
+
+    if "questoes" in payload and not isinstance(payload["questoes"], list):
+        return False, "JSON inválido (prova): 'questoes' deve ser lista."
+    if "discursivas" in payload and not isinstance(payload["discursivas"], list):
+        return False, "JSON inválido (prova): 'discursivas' deve ser lista."
 
     return True, None
 
 
-def _normalize_keys(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Normaliza para chave sem acento para facilitar restante da pipeline.
-    """
-    if "questões" in payload and "questoes" not in payload:
-        payload["questoes"] = payload.pop("questões")
-    return payload
+def _validate_gabarito_payload(payload: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    if "metadata_identificada" not in payload:
+        return False, "JSON inválido (gabarito): chave 'metadata_identificada' ausente."
+    if "gabarito_oficial" not in payload:
+        return False, "JSON inválido (gabarito): chave 'gabarito_oficial' ausente."
+
+    md = payload.get("metadata_identificada")
+    go = payload.get("gabarito_oficial")
+
+    if not isinstance(md, dict):
+        return (
+            False,
+            "JSON inválido (gabarito): 'metadata_identificada' deve ser objeto.",
+        )
+    if not isinstance(go, dict):
+        return False, "JSON inválido (gabarito): 'gabarito_oficial' deve ser objeto."
+
+    for required in (
+        "cargo_identificado_na_capa",
+        "tipo_ou_cor_identificado",
+        "match_encontrado_no_gabarito",
+    ):
+        if required not in md:
+            return False, f"JSON inválido (gabarito): metadata sem '{required}'."
+
+    if not isinstance(md.get("match_encontrado_no_gabarito"), bool):
+        return (
+            False,
+            "JSON inválido (gabarito): 'match_encontrado_no_gabarito' deve ser boolean.",
+        )
+
+    valid_values = {"A", "B", "C", "D", "E", "anulada"}
+    for q_num, ans in go.items():
+        if not isinstance(q_num, str):
+            return False, "JSON inválido (gabarito): as chaves devem ser string."
+        if not re.fullmatch(r"\d+", q_num):
+            return (
+                False,
+                f"JSON inválido (gabarito): chave de questão inválida '{q_num}'.",
+            )
+        if not isinstance(ans, str):
+            return (
+                False,
+                f"JSON inválido (gabarito): resposta da questão {q_num} deve ser string.",
+            )
+        if ans not in valid_values:
+            return (
+                False,
+                f"JSON inválido (gabarito): resposta '{ans}' inválida na questão {q_num}.",
+            )
+
+    return True, None
 
 
 def _file_part(path: str) -> Any:
-    """
-    Cria parte de arquivo para SDK google-genai.
-    """
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Arquivo não encontrado para envio ao modelo: {path}")
@@ -176,47 +219,37 @@ def _file_part(path: str) -> Any:
     return genai.types.Part.from_bytes(data=p.read_bytes(), mime_type=mime)
 
 
-def _build_user_instruction(
-    prompt_text: str,
-    image_file_names: List[str],
-) -> str:
+def _build_user_instruction(prompt_text: str, image_file_names: List[str]) -> str:
     images_list = (
         "\n".join(f"- {name}" for name in image_file_names)
         if image_file_names
-        else "- (sem imagens extraídas)"
+        else "- (sem imagens listadas)"
     )
     return (
         f"{prompt_text.strip()}\n\n"
         "INSTRUÇÕES ADICIONAIS DO PIPELINE:\n"
         "1) Responda apenas com JSON puro (sem markdown).\n"
-        "2) Siga estritamente o modelo esperado.\n"
-        "3) Lista de imagens extraídas disponíveis para referência:\n"
+        "2) Siga estritamente o modelo esperado no prompt.\n"
+        "3) Lista de imagens disponíveis para referência:\n"
         f"{images_list}\n"
     )
 
 
-def _genai_generate(
+def _genai_generate_with_parts(
     client: genai.Client,
     model: str,
     prompt_text: str,
-    prova_pdf_path: str,
-    gabarito_pdf_path: str,
-    extracted_image_paths: List[str],
+    attachments: List[str],
+    listed_image_names: List[str],
     logger: logging.Logger,
 ) -> str:
-    image_names = [Path(p).name for p in extracted_image_paths]
+    contents: List[Any] = [_build_user_instruction(prompt_text, listed_image_names)]
 
-    contents: List[Any] = [
-        _build_user_instruction(prompt_text, image_names),
-        _file_part(prova_pdf_path),
-        _file_part(gabarito_pdf_path),
-    ]
-
-    for img_path in extracted_image_paths:
+    for file_path in attachments:
         try:
-            contents.append(_file_part(img_path))
+            contents.append(_file_part(file_path))
         except Exception as exc:
-            logger.warning("Falha ao anexar imagem '%s' ao prompt: %s", img_path, exc)
+            logger.warning("Falha ao anexar arquivo '%s' ao prompt: %s", file_path, exc)
 
     resp = client.models.generate_content(
         model=model,
@@ -227,7 +260,6 @@ def _genai_generate(
     if text and text.strip():
         return text.strip()
 
-    # fallback: concatena partes textuais se existir estrutura diferente
     chunks: List[str] = []
     candidates = getattr(resp, "candidates", None) or []
     for cand in candidates:
@@ -246,25 +278,20 @@ def _genai_generate(
     raise RuntimeError("Resposta vazia da IA.")
 
 
-def call_ai_with_retries(
-    prova_pdf_path: str,
-    gabarito_pdf_path: str,
-    extracted_image_paths: List[str],
-    prompt_path: str = "config/prompt.md",
-    schema_path: str = "config/json_model.json",
-    model: str = GEMINI_MODEL,
-    network_retries: int = 3,
-    invalid_json_extra_retry: int = 1,
-    backoff_base_seconds: float = 2.0,
-    rate_limiter: Optional[SlidingWindowRateLimiter] = None,
-    logger: Optional[logging.Logger] = None,
+def _call_ai_core(
+    *,
+    attachments: List[str],
+    listed_image_names: List[str],
+    prompt_path: str,
+    schema_path: str,
+    model: str,
+    network_retries: int,
+    invalid_json_extra_retry: int,
+    backoff_base_seconds: float,
+    rate_limiter: Optional[SlidingWindowRateLimiter],
+    logger: Optional[logging.Logger],
+    validation_mode: str,  # "prova" | "gabarito"
 ) -> AIResult:
-    """
-    Regras implementadas:
-    1) Falha de rede/rate-limit/timeout -> retry com backoff (network_retries).
-    2) Respondeu JSON inválido -> 1 retry adicional (invalid_json_extra_retry=1).
-    3) Se continuar inválido -> retorna success=False para manter status 'pendente'.
-    """
     if logger is None:
         logger = logging.getLogger(__name__)
 
@@ -279,9 +306,8 @@ def call_ai_with_retries(
             error="Chave de API ausente (.env: GEMINI_API_KEY ou GOOGLE_API_KEY).",
         )
 
-    _ = load_json_schema(schema_path)  # reservado para validações futuras mais estritas
+    _ = load_json_schema(schema_path)
     prompt_text = load_prompt(prompt_path)
-
     client = genai.Client(api_key=api_key)
 
     attempts = 0
@@ -290,26 +316,35 @@ def call_ai_with_retries(
 
     while attempts < max_total_attempts:
         attempts += 1
-
         try:
             if rate_limiter is not None:
                 rate_limiter.acquire(timeout_seconds=180.0)
 
-            raw = _genai_generate(
+            raw = _genai_generate_with_parts(
                 client=client,
                 model=model,
                 prompt_text=prompt_text,
-                prova_pdf_path=prova_pdf_path,
-                gabarito_pdf_path=gabarito_pdf_path,
-                extracted_image_paths=extracted_image_paths,
+                attachments=attachments,
+                listed_image_names=listed_image_names,
                 logger=logger,
             )
 
-            json_text = _extract_json_from_text(raw)
-            payload = json.loads(json_text)
+            payload = json.loads(_extract_json_from_text(raw))
             payload = _normalize_keys(payload)
 
-            valid, reason = _basic_shape_validation(payload)
+            if validation_mode == "prova":
+                valid, reason = _validate_prova_payload(payload)
+            elif validation_mode == "gabarito":
+                valid, reason = _validate_gabarito_payload(payload)
+            else:
+                return AIResult(
+                    success=False,
+                    content=None,
+                    raw_text=raw,
+                    attempts=attempts,
+                    error=f"Modo de validação desconhecido: {validation_mode}",
+                )
+
             if valid:
                 return AIResult(
                     success=True,
@@ -319,14 +354,14 @@ def call_ai_with_retries(
                     error=None,
                 )
 
-            # JSON parseou, mas inválido no shape:
             if json_invalid_retries_used < invalid_json_extra_retry:
                 json_invalid_retries_used += 1
                 sleep_for = backoff_base_seconds * (
                     2 ** (json_invalid_retries_used - 1)
                 )
                 logger.warning(
-                    "JSON inválido (tentativa %s/%s): %s. Repetindo após %.1fs.",
+                    "JSON inválido (modo=%s, tentativa %s/%s): %s. Repetindo após %.1fs.",
+                    validation_mode,
                     json_invalid_retries_used,
                     invalid_json_extra_retry,
                     reason,
@@ -340,18 +375,18 @@ def call_ai_with_retries(
                 content=None,
                 raw_text=raw,
                 attempts=attempts,
-                error=reason or "JSON inválido após retries.",
+                error=reason or f"JSON inválido após retries (modo={validation_mode}).",
             )
 
-        except (json.JSONDecodeError,) as exc:
-            # Tratamos como "JSON inválido", com 1 retry adicional
+        except json.JSONDecodeError as exc:
             if json_invalid_retries_used < invalid_json_extra_retry:
                 json_invalid_retries_used += 1
                 sleep_for = backoff_base_seconds * (
                     2 ** (json_invalid_retries_used - 1)
                 )
                 logger.warning(
-                    "Falha de parse JSON (tentativa %s/%s): %s. Repetindo após %.1fs.",
+                    "Falha de parse JSON (modo=%s, tentativa %s/%s): %s. Repetindo após %.1fs.",
+                    validation_mode,
                     json_invalid_retries_used,
                     invalid_json_extra_retry,
                     exc,
@@ -365,7 +400,7 @@ def call_ai_with_retries(
                 content=None,
                 raw_text="",
                 attempts=attempts,
-                error=f"JSON inválido após retries: {exc}",
+                error=f"JSON inválido após retries (modo={validation_mode}): {exc}",
             )
 
         except DailyLimitReachedError as exc:
@@ -376,13 +411,13 @@ def call_ai_with_retries(
                 attempts=attempts,
                 error=str(exc),
             )
+
         except Exception as exc:
-            # Falhas transitórias de rede/timeout/rate-limit do provider -> retry com backoff
-            # Se atingir limite de tentativas, encerra.
             if attempts <= network_retries:
                 sleep_for = backoff_base_seconds * (2 ** (attempts - 1))
                 logger.warning(
-                    "Falha na chamada da IA (tentativa %s/%s): %s. Retry em %.1fs.",
+                    "Falha na chamada da IA (modo=%s, tentativa %s/%s): %s. Retry em %.1fs.",
+                    validation_mode,
                     attempts,
                     network_retries + 1,
                     exc,
@@ -396,7 +431,7 @@ def call_ai_with_retries(
                 content=None,
                 raw_text="",
                 attempts=attempts,
-                error=f"Falha na IA após retries: {exc}",
+                error=f"Falha na IA após retries (modo={validation_mode}): {exc}",
             )
 
     return AIResult(
@@ -404,5 +439,97 @@ def call_ai_with_retries(
         content=None,
         raw_text="",
         attempts=attempts,
-        error="Falha desconhecida após tentativas.",
+        error=f"Falha desconhecida após tentativas (modo={validation_mode}).",
+    )
+
+
+def call_ai_prova_with_retries(
+    prova_pdf_path: str,
+    extracted_image_paths: List[str],
+    prompt_path: str = "config/prompt_prova.md",
+    schema_path: str = "config/json_model.json",
+    model: str = GEMINI_MODEL,
+    network_retries: int = 3,
+    invalid_json_extra_retry: int = 1,
+    backoff_base_seconds: float = 2.0,
+    rate_limiter: Optional[SlidingWindowRateLimiter] = None,
+    logger: Optional[logging.Logger] = None,
+) -> AIResult:
+    attachments: List[str] = [prova_pdf_path, *extracted_image_paths]
+    listed_image_names = [Path(p).name for p in extracted_image_paths]
+
+    return _call_ai_core(
+        attachments=attachments,
+        listed_image_names=listed_image_names,
+        prompt_path=prompt_path,
+        schema_path=schema_path,
+        model=model,
+        network_retries=network_retries,
+        invalid_json_extra_retry=invalid_json_extra_retry,
+        backoff_base_seconds=backoff_base_seconds,
+        rate_limiter=rate_limiter,
+        logger=logger,
+        validation_mode="prova",
+    )
+
+
+def call_ai_gabarito_with_retries(
+    gabarito_pdf_path: str,
+    prova_capa_image_path: str,
+    prompt_path: str = "config/prompt_gabarito.md",
+    schema_path: str = "config/json_model.json",
+    model: str = GEMINI_MODEL,
+    network_retries: int = 3,
+    invalid_json_extra_retry: int = 1,
+    backoff_base_seconds: float = 2.0,
+    rate_limiter: Optional[SlidingWindowRateLimiter] = None,
+    logger: Optional[logging.Logger] = None,
+) -> AIResult:
+    attachments: List[str] = [gabarito_pdf_path, prova_capa_image_path]
+    listed_image_names = [Path(prova_capa_image_path).name]
+
+    return _call_ai_core(
+        attachments=attachments,
+        listed_image_names=listed_image_names,
+        prompt_path=prompt_path,
+        schema_path=schema_path,
+        model=model,
+        network_retries=network_retries,
+        invalid_json_extra_retry=invalid_json_extra_retry,
+        backoff_base_seconds=backoff_base_seconds,
+        rate_limiter=rate_limiter,
+        logger=logger,
+        validation_mode="gabarito",
+    )
+
+
+# Compatibilidade retroativa com chamadas antigas do projeto
+def call_ai_with_retries(
+    prova_pdf_path: str,
+    gabarito_pdf_path: str,
+    extracted_image_paths: List[str],
+    prompt_path: str = "config/prompt.md",
+    schema_path: str = "config/json_model.json",
+    model: str = GEMINI_MODEL,
+    network_retries: int = 3,
+    invalid_json_extra_retry: int = 1,
+    backoff_base_seconds: float = 2.0,
+    rate_limiter: Optional[SlidingWindowRateLimiter] = None,
+    logger: Optional[logging.Logger] = None,
+) -> AIResult:
+    attachments: List[str] = [prova_pdf_path, gabarito_pdf_path, *extracted_image_paths]
+    listed_image_names = [Path(p).name for p in extracted_image_paths]
+
+    return _call_ai_core(
+        attachments=attachments,
+        listed_image_names=listed_image_names,
+        prompt_path=prompt_path,
+        schema_path=schema_path,
+        model=model,
+        network_retries=network_retries,
+        invalid_json_extra_retry=invalid_json_extra_retry,
+        backoff_base_seconds=backoff_base_seconds,
+        rate_limiter=rate_limiter,
+        logger=logger,
+        validation_mode="prova",
     )

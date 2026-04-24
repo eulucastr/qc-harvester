@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sqlite3
 import traceback
 from pathlib import Path
@@ -11,12 +12,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .export import persist_json_and_images
 from .extract_images import extract_images_from_prova, manifest_to_dict
-from .use_ai import SlidingWindowRateLimiter, call_ai_with_retries
+from .use_ai import (
+    SlidingWindowRateLimiter,
+    call_ai_gabarito_with_retries,
+    call_ai_prova_with_retries,
+)
 
 DB_PATH = "mentoria.db"
 TABLE_NAME = "concursos"
 
-PROMPT_PATH = "config/prompt.md"
+PROMPT_PROVA_PATH = "config/prompt_prova.md"
+PROMPT_GABARITO_PATH = "config/prompt_gabarito.md"
 JSON_MODEL_PATH = "config/json_model.json"
 
 TEMP_BASE_DIR = "temp"
@@ -155,8 +161,11 @@ def _build_batch_state(
             "manifest": None,
             "manifest_dict": None,
             "image_paths": [],
+            "first_page_pdf_path": None,
             "temp_dir": None,
-            "ai_result": None,
+            "ai_result_prova": None,
+            "ai_result_gabarito": None,
+            "merged_payload": None,
             "json_abs_path": None,
             "images_abs_dir": None,
             "copied_files": [],
@@ -164,6 +173,117 @@ def _build_batch_state(
             "reason": None,
         }
     return state
+
+
+def _normalize_payload_keys(payload: Dict[str, Any]) -> Dict[str, Any]:
+    data = dict(payload)
+    if "questões" in data and "questoes" not in data:
+        data["questoes"] = data.pop("questões")
+    return data
+
+
+def _parse_question_number(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    match = re.search(r"\d+", text)
+    if not match:
+        return None
+    try:
+        return int(match.group(0))
+    except Exception:
+        return None
+
+
+def _normalize_gabarito_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    txt = str(value).strip()
+    if not txt:
+        return None
+
+    low = txt.lower()
+    if low in {"anulada", "anulado", "nula", "nulo", "x", "*"}:
+        return "anulada"
+
+    up = txt.upper()
+    if up in {"A", "B", "C", "D", "E"}:
+        return up
+
+    # C/E para CEBRASPE já passa pela regra acima; aqui mantém fallback seguro
+    if up in {"CERTO", "ERRADO"}:
+        return "C" if up == "CERTO" else "E"
+
+    return txt
+
+
+def merge_questoes_com_gabarito(
+    questoes_payload: Dict[str, Any],
+    gabarito_payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    merged = _normalize_payload_keys(questoes_payload)
+    questoes = merged.get("questoes")
+
+    if not isinstance(questoes, list):
+        raise ValueError("Payload de prova inválido: 'questoes' não é lista.")
+
+    gabarito_oficial = gabarito_payload.get("gabarito_oficial", {})
+    if not isinstance(gabarito_oficial, dict):
+        raise ValueError(
+            "Payload de gabarito inválido: 'gabarito_oficial' não é objeto."
+        )
+
+    gabarito_map: Dict[int, str] = {}
+    for k, v in gabarito_oficial.items():
+        n = _parse_question_number(k)
+        gv = _normalize_gabarito_value(v)
+        if n is not None and gv is not None:
+            gabarito_map[n] = gv
+
+    for q in questoes:
+        if not isinstance(q, dict):
+            continue
+        n = _parse_question_number(q.get("numero"))
+        if n is None:
+            continue
+        if n in gabarito_map:
+            q["gabarito"] = gabarito_map[n]
+        else:
+            # Mantém campo presente para respeitar export/shape
+            q["gabarito"] = q.get("gabarito", "anulada")
+
+    return merged
+
+
+def _build_first_page_pdf_from_prova(prova_pdf_path: str, temp_dir: str) -> str:
+    import pdfplumber
+
+    prova_path = Path(prova_pdf_path)
+    if not prova_path.exists():
+        raise FileNotFoundError(
+            f"Prova não encontrada para gerar capa: {prova_pdf_path}"
+        )
+
+    out_dir = Path(temp_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    first_page_pdf = out_dir / "prova_capa.pdf"
+
+    with pdfplumber.open(str(prova_path)) as pdf:
+        if not pdf.pages:
+            raise ValueError(f"PDF da prova sem páginas: {prova_pdf_path}")
+
+        first_page = pdf.pages[0]
+        cropped = first_page.crop(
+            (0, 0, float(first_page.width), float(first_page.height))
+        )
+        single_page_pdf = cropped.to_image(resolution=150).original
+
+    single_page_pdf.save(first_page_pdf, "PDF")
+    return str(first_page_pdf.resolve())
 
 
 async def _process_row_pipeline(
@@ -179,9 +299,9 @@ async def _process_row_pipeline(
     if row_id is None:
         return
 
-    # ETAPA 1 -> ETAPA 2 -> ETAPA 3 -> ETAPA 4 (encadeadas por item)
+    # ETAPA 1: validação + extração de imagens da prova (pulando primeira página, como regra do extractor)
     try:
-        print(f"[PIPE][id={row_id}] ETAPA 1: validando caminhos.")
+        print(f"[PIPE][id={row_id}] ETAPA 1: validando caminhos e extraindo imagens.")
         prova_path = ensure_local_absolute(str(row.get("prova_path", "")), "prova_path")
         gabarito_path = ensure_local_absolute(
             str(row.get("gabarito_path", "")), "gabarito_path"
@@ -189,7 +309,6 @@ async def _process_row_pipeline(
         row_state["prova_path"] = prova_path
         row_state["gabarito_path"] = gabarito_path
 
-        print(f"[PIPE][id={row_id}] ETAPA 1: extraindo imagens.")
         manifest = await asyncio.to_thread(
             extract_images_from_prova,
             prova_pdf_path=prova_path,
@@ -212,9 +331,8 @@ async def _process_row_pipeline(
         row_state["temp_dir"] = manifest.output_dir
 
         print(
-            f"[PIPE][id={row_id}] ETAPA 1 OK. Imagens: {manifest.total_images} | Temp: {manifest.output_dir}"
+            f"[PIPE][id={row_id}] ETAPA 1 OK. Imagens extraídas da prova: {manifest.total_images}."
         )
-
     except Exception as exc:
         row_state["status"] = "pendente"
         row_state["reason"] = f"Falha na extração de imagens: {exc}"
@@ -225,19 +343,16 @@ async def _process_row_pipeline(
             exc,
             traceback.format_exc(),
         )
-        cleanup_temp_dir(row_state.get("temp_dir"), error_logger, row_id=row_id)
         return
 
+    # ETAPA 2A: IA da prova (prova inteira + imagens extraídas + prompt_prova)
     try:
-        print(
-            f"[PIPE][id={row_id}] ETAPA 2: chamando IA com {len(row_state['image_paths'])} imagens."
-        )
-        ai_result = await asyncio.to_thread(
-            call_ai_with_retries,
+        print(f"[PIPE][id={row_id}] ETAPA 2A: IA PROVA.")
+        ai_result_prova = await asyncio.to_thread(
+            call_ai_prova_with_retries,
             prova_pdf_path=row_state["prova_path"],
-            gabarito_pdf_path=row_state["gabarito_path"],
             extracted_image_paths=row_state["image_paths"],
-            prompt_path=PROMPT_PATH,
+            prompt_path=PROMPT_PROVA_PATH,
             schema_path=JSON_MODEL_PATH,
             network_retries=3,
             invalid_json_extra_retry=1,
@@ -245,55 +360,123 @@ async def _process_row_pipeline(
             rate_limiter=rate_limiter,
             logger=success_logger,
         )
-        row_state["ai_result"] = ai_result
+        row_state["ai_result_prova"] = ai_result_prova
 
-        print(
-            f"[PIPE][id={row_id}] ETAPA 2 retorno: success={ai_result.success} attempts={ai_result.attempts}"
-        )
-
-        if not ai_result.success or not ai_result.content:
+        if not ai_result_prova.success or not ai_result_prova.content:
             row_state["status"] = "pendente"
-            row_state["reason"] = ai_result.error or "IA sem sucesso"
-            print(
-                f"[PIPE][id={row_id}] ETAPA 2 inválida. Permanece pendente. Motivo: {row_state['reason']}"
-            )
+            row_state["reason"] = ai_result_prova.error or "IA prova sem sucesso"
             success_logger.info(
-                "Registro id=%s mantido como pendente. Motivo IA: %s",
+                "Registro id=%s mantido pendente. Motivo IA prova: %s",
                 row_id,
                 row_state["reason"],
             )
-            cleanup_temp_dir(row_state.get("temp_dir"), error_logger, row_id=row_id)
             return
 
+        print(f"[PIPE][id={row_id}] ETAPA 2A OK.")
     except Exception as exc:
         row_state["status"] = "pendente"
-        row_state["reason"] = f"Falha na IA: {exc}"
-        print(f"[PIPE][id={row_id}] ETAPA 2 ERRO: {exc}")
+        row_state["reason"] = f"Falha na IA (prova): {exc}"
+        print(f"[PIPE][id={row_id}] ETAPA 2A ERRO: {exc}")
         error_logger.error(
-            "Falha na etapa de IA id=%s: %s\n%s",
+            "Falha na etapa de IA PROVA id=%s: %s\n%s",
             row_id,
             exc,
             traceback.format_exc(),
         )
-        cleanup_temp_dir(row_state.get("temp_dir"), error_logger, row_id=row_id)
         return
 
+    # ETAPA 2B: IA do gabarito (arquivo gabarito + primeira página da prova + prompt_gabarito)
+    try:
+        print(f"[PIPE][id={row_id}] ETAPA 2B: IA GABARITO.")
+        temp_dir = row_state.get("temp_dir")
+        if not temp_dir:
+            raise ValueError("Diretório temporário ausente para gerar PDF da capa.")
+
+        first_page_pdf = await asyncio.to_thread(
+            _build_first_page_pdf_from_prova,
+            row_state["prova_path"],
+            temp_dir,
+        )
+        row_state["first_page_pdf_path"] = first_page_pdf
+
+        ai_result_gabarito = await asyncio.to_thread(
+            call_ai_gabarito_with_retries,
+            gabarito_pdf_path=row_state["gabarito_path"],
+            prova_capa_image_path=first_page_pdf,
+            prompt_path=PROMPT_GABARITO_PATH,
+            schema_path=JSON_MODEL_PATH,
+            network_retries=3,
+            invalid_json_extra_retry=1,
+            backoff_base_seconds=2.0,
+            rate_limiter=rate_limiter,
+            logger=success_logger,
+        )
+        row_state["ai_result_gabarito"] = ai_result_gabarito
+
+        if not ai_result_gabarito.success or not ai_result_gabarito.content:
+            row_state["status"] = "pendente"
+            row_state["reason"] = ai_result_gabarito.error or "IA gabarito sem sucesso"
+            success_logger.info(
+                "Registro id=%s mantido pendente. Motivo IA gabarito: %s",
+                row_id,
+                row_state["reason"],
+            )
+            return
+
+        print(f"[PIPE][id={row_id}] ETAPA 2B OK.")
+    except Exception as exc:
+        row_state["status"] = "pendente"
+        row_state["reason"] = f"Falha na IA (gabarito): {exc}"
+        print(f"[PIPE][id={row_id}] ETAPA 2B ERRO: {exc}")
+        error_logger.error(
+            "Falha na etapa de IA GABARITO id=%s: %s\n%s",
+            row_id,
+            exc,
+            traceback.format_exc(),
+        )
+        return
+
+    # ETAPA 2C: merge prova + gabarito por número de questão
+    try:
+        print(f"[PIPE][id={row_id}] ETAPA 2C: merge questões + gabarito.")
+        prova_payload = row_state["ai_result_prova"].content
+        gabarito_payload = row_state["ai_result_gabarito"].content
+        if prova_payload is None or gabarito_payload is None:
+            row_state["status"] = "pendente"
+            row_state["reason"] = "Payload ausente para merge"
+            return
+
+        merged_payload = merge_questoes_com_gabarito(
+            questoes_payload=prova_payload,
+            gabarito_payload=gabarito_payload,
+        )
+        row_state["merged_payload"] = merged_payload
+        print(f"[PIPE][id={row_id}] ETAPA 2C OK.")
+    except Exception as exc:
+        row_state["status"] = "pendente"
+        row_state["reason"] = f"Falha no merge: {exc}"
+        print(f"[PIPE][id={row_id}] ETAPA 2C ERRO: {exc}")
+        error_logger.error(
+            "Falha na etapa de MERGE id=%s: %s\n%s",
+            row_id,
+            exc,
+            traceback.format_exc(),
+        )
+        return
+
+    # ETAPA 3: exportar
     try:
         print(f"[PIPE][id={row_id}] ETAPA 3: exportando JSON/imagens.")
-        ai_payload = row_state["ai_result"].content
-        if ai_payload is None:
+        merged_payload = row_state["merged_payload"]
+        if merged_payload is None:
             row_state["status"] = "pendente"
-            row_state["reason"] = "IA sem payload para exportação"
-            print(
-                f"[PIPE][id={row_id}] ETAPA 3 inválida. Motivo: {row_state['reason']}"
-            )
-            cleanup_temp_dir(row_state.get("temp_dir"), error_logger, row_id=row_id)
+            row_state["reason"] = "Payload final ausente para exportação"
             return
 
         json_abs_path, images_abs_dir, copied_files = await asyncio.to_thread(
             persist_json_and_images,
             row=row_state["row"],
-            payload=ai_payload,
+            payload=merged_payload,
             schema_like=schema_like,
             output_base_dir=OUTPUT_BASE_DIR,
             temp_images_dir=row_state["temp_dir"],
@@ -322,11 +505,9 @@ async def _process_row_pipeline(
             len(copied_files),
             manifest_total,
         )
-
         print(
             f"[PIPE][id={row_id}] ETAPA 3 OK. JSON: {json_abs_path} | Imagens copiadas: {len(copied_files)}"
         )
-
     except Exception as exc:
         row_state["status"] = "pendente"
         row_state["reason"] = f"Falha na exportação: {exc}"
@@ -338,8 +519,7 @@ async def _process_row_pipeline(
             traceback.format_exc(),
         )
     finally:
-        print(f"[PIPE][id={row_id}] ETAPA 4: limpando temporário.")
-        cleanup_temp_dir(row_state.get("temp_dir"), error_logger, row_id=row_id)
+        print(f"[PIPE][id={row_id}] ETAPA 4: aguardando limpeza ao final do ciclo.")
 
 
 def run_extraction_pipeline(db_path: str = DB_PATH) -> Dict[str, Any]:
@@ -411,6 +591,18 @@ def run_extraction_pipeline(db_path: str = DB_PATH) -> Dict[str, Any]:
                 await asyncio.gather(*tasks)
 
         asyncio.run(_run_batch())
+
+        print(f"[ETAPA 4][CICLO {batch_idx}] Limpando temporários do lote...")
+        for row in batch_rows:
+            row_id = row.get("id")
+            if row_id is None:
+                continue
+            row_state = state[row_id]
+            cleanup_temp_dir(
+                temp_dir=row_state.get("temp_dir"),
+                error_logger=error_logger,
+                row_id=row_id,
+            )
 
         print(f"[PIPELINE] Consolidando resultados do ciclo {batch_idx}...")
         for row in batch_rows:

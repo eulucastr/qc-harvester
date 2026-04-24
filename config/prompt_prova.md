@@ -79,9 +79,12 @@ Sua tarefa é **associar logicamente** os IDs das imagens detectadas aos blocos 
 2. Textos, Formatação, LaTeX e Tabelas:
 
     Utilize formatação com tags html para preservar marcações do texto original no "enunciado", "texto_referencia" e "alternativas". Utilize:
+    
+    SEMPRE que houver um dos casos abaixo, utilize a tag:
     Negrito -> "<b>texto em negrito</b>"
     Italico -> "<i>texto em italico</i>"
     Sublinhado -> "<u>texto sublinhado</u>"
+    ** Um trecho pode conter mais de uma formatação ao mesmo tempo (negrito e sublinhado, por exemplo), nesse caso, envolva o trecho em todas as tags devidas.
     
     Utilize a tag <p> para identificar os parágrafos.
 
